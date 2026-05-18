@@ -1,0 +1,2188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Document Extraction Pipeline</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #1a1d2e;
+      border-bottom: 1px solid #2d3148;
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; color: #a78bfa; }
+    header span { font-size: 0.8rem; color: #64748b; }
+
+    /* Qdrant status */
+    #qdrantStatus {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 7px;
+      font-size: 0.78rem; color: #64748b;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #475569;
+    }
+    .status-dot.online  { background: #4ade80; box-shadow: 0 0 6px #4ade8088; }
+    .status-dot.offline { background: #f87171; }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: calc(100vh - 57px);
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      background: #1a1d2e;
+      border-right: 1px solid #2d3148;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-section { padding: 20px; border-bottom: 1px solid #2d3148; }
+    .sidebar-section h2 { font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #64748b; margin-bottom: 14px; }
+
+    /* Upload zone */
+    .drop-zone {
+      border: 2px dashed #3d4268;
+      border-radius: 10px;
+      padding: 24px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #12152a;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: #a78bfa;
+      background: #1e1b4b;
+    }
+    .drop-zone .icon { font-size: 2rem; margin-bottom: 8px; }
+    .drop-zone p { font-size: 0.85rem; color: #94a3b8; }
+    .drop-zone p strong { color: #a78bfa; }
+    #fileInput { display: none; }
+
+    /* Vision backend selector */
+    .vision-row { margin-top: 14px; }
+    .vision-row .vision-label { font-size: 0.82rem; color: #94a3b8; margin-bottom: 6px; }
+
+    /* OCR engine badge */
+    .ocr-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+    .ocr-row .ocr-label { font-size: 0.82rem; color: #94a3b8; }
+    .ocr-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: 20px;
+      background: #1a1f3a; border: 1px solid #2d3148;
+      font-size: 0.78rem; color: #a78bfa; font-weight: 600;
+    }
+    .ocr-badge .ocr-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #22c55e; flex-shrink: 0;
+    }
+    .vision-seg {
+      display: flex; gap: 0;
+      border: 1px solid #2d3148; border-radius: 8px; overflow: hidden;
+      width: fit-content;
+    }
+    .vision-seg input[type="radio"] { display: none; }
+    .vision-seg label {
+      padding: 5px 16px;
+      font-size: 0.8rem; color: #94a3b8;
+      cursor: pointer; user-select: none;
+      background: #12152a;
+      border-right: 1px solid #2d3148;
+      transition: background 0.15s, color 0.15s;
+    }
+    .vision-seg label:last-of-type { border-right: none; }
+    .vision-seg input[type="radio"]:checked + label {
+      background: #7c3aed; color: #fff; font-weight: 600;
+    }
+
+    /* Options */
+    .option-row {
+      display: flex; align-items: center;
+      justify-content: space-between; margin-top: 12px;
+    }
+    .option-row label { font-size: 0.85rem; color: #94a3b8; }
+    .toggle { position: relative; width: 40px; height: 22px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: #2d3148; border-radius: 22px; cursor: pointer; transition: 0.2s;
+    }
+    .toggle-slider:before {
+      content: ""; position: absolute;
+      width: 16px; height: 16px; left: 3px; bottom: 3px;
+      background: white; border-radius: 50%; transition: 0.2s;
+    }
+    .toggle input:checked + .toggle-slider { background: #7c3aed; }
+    .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+
+    .btn-upload {
+      width: 100%; margin-top: 14px;
+      padding: 10px;
+      background: #7c3aed;
+      color: white; border: none;
+      border-radius: 8px; font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .btn-upload:hover { background: #6d28d9; }
+    .btn-upload:disabled { background: #3d4268; cursor: not-allowed; }
+
+    /* Progress */
+    #progressWrap { display: none; margin-top: 12px; }
+    .progress-bar {
+      height: 4px; background: #2d3148; border-radius: 4px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; width: 0%; background: #a78bfa; border-radius: 4px;
+      animation: indeterminate 1.4s infinite;
+    }
+    @keyframes indeterminate {
+      0%   { width: 0%;   margin-left: 0%; }
+      50%  { width: 60%;  margin-left: 20%; }
+      100% { width: 0%;   margin-left: 100%; }
+    }
+    #progressMsg { font-size: 0.75rem; color: #64748b; margin-top: 6px; text-align: center; }
+
+    /* File list */
+    .file-list { flex: 1; overflow-y: auto; padding: 12px; }
+    .file-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+      border: 1px solid transparent;
+      margin-bottom: 6px;
+    }
+    .file-item:hover { background: #1e2235; }
+    .file-item.active { background: #1e1b4b; border-color: #7c3aed; }
+    .file-item .name { font-size: 0.85rem; font-weight: 500; word-break: break-all; }
+    .file-item .meta { font-size: 0.75rem; color: #64748b; margin-top: 3px; }
+    .file-item .badges { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+    .badge {
+      font-size: 0.65rem; padding: 2px 7px; border-radius: 20px; font-weight: 600;
+    }
+    .badge-text    { background: #1e3a5f; color: #60a5fa; }
+    .badge-table   { background: #14532d; color: #4ade80; }
+    .badge-image   { background: #4a1942; color: #e879f9; }
+    .badge-indexed { background: #1a2e1a; color: #4ade80; border: 1px solid #166534; }
+
+    /* ── Main panel ── */
+    .main {
+      overflow-y: auto;
+      padding: 28px 32px;
+      background: #0f1117;
+    }
+
+    .placeholder {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; color: #334155; text-align: center;
+    }
+    .placeholder .big-icon { font-size: 4rem; margin-bottom: 16px; }
+    .placeholder p { font-size: 1rem; }
+
+    /* ── Ask AI panel ── */
+    .ask-panel {
+      background: #1a1d2e;
+      border: 1px solid #3d2e6e;
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 24px;
+    }
+    .ask-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .ask-panel-header h3 {
+      font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #a78bfa;
+    }
+    .ask-backend-badge {
+      font-size: 0.7rem; padding: 2px 9px; border-radius: 20px;
+      background: #2e1b5e; color: #a78bfa; border: 1px solid #4c3099;
+    }
+    .ask-input-row { display: flex; gap: 10px; align-items: center; }
+    .ask-input {
+      flex: 1; background: #12152a; border: 1px solid #3d2e6e;
+      border-radius: 8px; padding: 10px 14px;
+      color: #e2e8f0; font-size: 0.9rem;
+      outline: none; transition: border-color 0.2s;
+    }
+    .ask-input:focus { border-color: #a78bfa; }
+    .ask-input::placeholder { color: #475569; }
+    .ask-options {
+      display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap;
+      align-items: center;
+    }
+    .ask-option-label {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.78rem; color: #64748b; cursor: pointer; user-select: none;
+    }
+    .ask-option-label input[type="checkbox"] { accent-color: #7c3aed; cursor: pointer; }
+    .ask-limit-wrap {
+      display: flex; align-items: center; gap: 6px; margin-left: auto;
+      font-size: 0.78rem; color: #64748b;
+    }
+    .ask-limit {
+      width: 52px; background: #12152a; border: 1px solid #2d3148;
+      border-radius: 6px; padding: 4px 8px;
+      color: #94a3b8; font-size: 0.82rem; outline: none; text-align: center;
+    }
+    .btn-ask {
+      padding: 10px 22px; background: #7c3aed;
+      color: white; border: none; border-radius: 8px;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: background 0.2s; white-space: nowrap; flex-shrink: 0;
+    }
+    .btn-ask:hover    { background: #6d28d9; }
+    .btn-ask:disabled { background: #3d4268; cursor: not-allowed; }
+    .ask-answer-wrap { margin-top: 16px; display: none; }
+    .ask-answer-wrap.visible { display: block; }
+    .ask-answer-box {
+      background: #12152a; border: 1px solid #3d2e6e;
+      border-radius: 8px; padding: 16px 18px;
+      font-size: 0.9rem; color: #e2e8f0; line-height: 1.75;
+      white-space: pre-wrap; word-break: break-word; min-height: 48px;
+    }
+    .ask-answer-box .cursor {
+      display: inline-block; width: 2px; height: 1em;
+      background: #a78bfa; margin-left: 2px;
+      animation: blink 0.9s step-end infinite; vertical-align: text-bottom;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .ask-meta-row {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin-top: 8px; font-size: 0.72rem; color: #475569;
+    }
+    .ask-confidence {
+      padding: 2px 9px; border-radius: 20px; font-weight: 600;
+      background: #0f2e2c; color: #2dd4bf;
+    }
+    .ask-confidence.low { background: #2e1a0e; color: #fb923c; }
+    .ask-sources { margin-top: 12px; }
+    .ask-sources-title {
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #475569; margin-bottom: 7px;
+    }
+    .ask-source-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #1e2235; border: 1px solid #2d3148;
+      border-radius: 6px; padding: 4px 10px; margin: 0 5px 5px 0;
+      font-size: 0.72rem; color: #94a3b8;
+    }
+    .ask-source-chip .chip-score { color: #2dd4bf; font-weight: 700; font-family: monospace; }
+    .ask-source-chip .chip-section {
+      color: #475569; max-width: 140px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* ── Judge panel ── */
+    .judge-panel {
+      margin-top: 14px; border: 1px solid #3d2e6e;
+      border-radius: 8px; overflow: hidden;
+    }
+    .judge-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px; background: #1e1b3a; cursor: pointer;
+      user-select: none;
+    }
+    .judge-header:hover { background: #261f45; }
+    .judge-title {
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.07em; color: #a78bfa; font-weight: 600;
+    }
+    .judge-overall {
+      font-size: 0.78rem; font-weight: 700; font-family: monospace;
+      padding: 2px 9px; border-radius: 20px;
+    }
+    .judge-overall.good  { background: #0f2e2c; color: #2dd4bf; }
+    .judge-overall.mid   { background: #1f2a10; color: #a3e635; }
+    .judge-overall.low   { background: #2e1a0e; color: #fb923c; }
+    .judge-overall.bad   { background: #2e1010; color: #f87171; }
+    .judge-chevron { font-size: 0.7rem; color: #475569; transition: transform 0.2s; }
+    .judge-body { background: #12152a; padding: 12px 14px; display: none; }
+    .judge-body.open { display: block; }
+    .judge-dim-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 6px 0; border-bottom: 1px solid #1e2235;
+      font-size: 0.76rem;
+    }
+    .judge-dim-row:last-child { border-bottom: none; }
+    .judge-dim-name {
+      width: 130px; flex-shrink: 0; color: #64748b;
+      text-transform: capitalize; font-size: 0.72rem;
+    }
+    .judge-dim-bar-wrap {
+      flex: 1; display: flex; align-items: center; gap: 8px;
+    }
+    .judge-dim-bar-bg {
+      flex: 1; height: 5px; background: #1e2235;
+      border-radius: 3px; overflow: hidden;
+    }
+    .judge-dim-bar-fill {
+      height: 100%; border-radius: 3px;
+      background: linear-gradient(90deg, #7c3aed, #2dd4bf);
+      transition: width 0.4s ease;
+    }
+    .judge-dim-score {
+      width: 38px; text-align: right; font-family: monospace;
+      font-weight: 700; color: #94a3b8; font-size: 0.72rem;
+    }
+    .judge-dim-reasoning {
+      margin-top: 2px; color: #475569; font-size: 0.69rem;
+      line-height: 1.4; width: 100%;
+    }
+    .judge-loading {
+      font-size: 0.78rem; color: #475569; padding: 10px 2px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .judge-spinner {
+      width: 14px; height: 14px; border: 2px solid #3d2e6e;
+      border-top-color: #a78bfa; border-radius: 50%;
+      animation: spin 0.7s linear infinite; flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Escalation banner ── */
+    .escalation-banner {
+      margin-top: 12px; padding: 12px 16px;
+      background: #1e0a00; border: 1px solid #c2410c; border-radius: 8px;
+      display: flex; align-items: flex-start; gap: 10px;
+    }
+    .escalation-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 1px; }
+    .escalation-body { flex: 1; min-width: 0; }
+    .escalation-title { font-size: 0.78rem; font-weight: 600; color: #fb923c; margin-bottom: 4px; }
+    .escalation-msg { font-size: 0.82rem; color: #fed7aa; line-height: 1.5; }
+    .escalation-reason { font-size: 0.7rem; color: #7c3f00; margin-top: 6px; }
+    .escalation-intent-badge {
+      display: inline-block; font-size: 0.68rem; padding: 2px 6px;
+      background: #431407; color: #fb923c; border-radius: 4px; margin-left: 6px;
+    }
+    /* ── Feedback row ── */
+    .feedback-row {
+      margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .feedback-label { font-size: 0.75rem; color: #475569; }
+    .feedback-btn {
+      font-size: 1rem; background: none; border: 1px solid #334155;
+      border-radius: 6px; padding: 3px 10px; cursor: pointer; color: #94a3b8;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .feedback-btn:hover { border-color: #64748b; color: #e2e8f0; }
+    .feedback-btn.active-up   { border-color: #16a34a; color: #4ade80; background: #052e16; }
+    .feedback-btn.active-down { border-color: #dc2626; color: #f87171; background: #2e0606; }
+    .feedback-sent { font-size: 0.75rem; color: #4ade80; }
+
+    /* ── Memory panel ── */
+    .memory-panel {
+      margin-top: 14px; border: 1px solid #164e63;
+      border-radius: 8px; overflow: hidden;
+    }
+    .memory-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px; background: #0c2233; cursor: pointer;
+      user-select: none;
+    }
+    .memory-header:hover { background: #0e2a3e; }
+    .memory-title {
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.07em; color: #38bdf8; font-weight: 600;
+    }
+    .memory-body { background: #0a1929; padding: 12px 14px; display: none; }
+    .memory-body.open { display: block; }
+    .memory-session-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px; padding-bottom: 10px;
+      border-bottom: 1px solid #164e63;
+    }
+    .memory-session-label { font-size: 0.7rem; color: #475569; }
+    .memory-session-badge {
+      font-size: 0.68rem; padding: 2px 9px; border-radius: 20px;
+      background: #0c2a3a; color: #38bdf8; border: 1px solid #164e63;
+      font-family: monospace; cursor: default;
+    }
+    .memory-reset-btn {
+      margin-left: auto; font-size: 0.68rem; padding: 2px 9px;
+      border-radius: 20px; background: transparent;
+      border: 1px solid #334155; color: #64748b; cursor: pointer;
+      transition: all 0.15s; display: none;
+    }
+    .memory-reset-btn:hover { border-color: #f87171; color: #f87171; }
+    .memory-section-title {
+      font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #475569; margin-bottom: 6px; margin-top: 10px;
+    }
+    .memory-section-title:first-of-type { margin-top: 0; }
+    .memory-fact-row {
+      display: flex; gap: 8px; padding: 5px 0;
+      border-bottom: 1px solid #0e1e2d; font-size: 0.75rem;
+    }
+    .memory-fact-row:last-child { border-bottom: none; }
+    .memory-fact-key {
+      width: 120px; flex-shrink: 0; color: #4e6e8e;
+      font-family: monospace; font-size: 0.7rem;
+    }
+    .memory-fact-val { color: #94a3b8; word-break: break-word; }
+    .memory-empty { font-size: 0.75rem; color: #334155; font-style: italic; }
+    .rewrite-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.68rem; padding: 2px 8px; border-radius: 20px;
+      background: #0c2a3a; color: #38bdf8; border: 1px solid #164e63;
+      cursor: default;
+    }
+    .memory-chevron { font-size: 0.7rem; color: #334155; transition: transform 0.2s; }
+
+    /* ── Search panel ── */
+    .search-panel {
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 24px;
+    }
+    .search-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .search-panel-header h3 {
+      font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #64748b;
+    }
+    .search-panel-header .qdrant-hint {
+      font-size: 0.72rem; color: #475569;
+    }
+    .search-input-row { display: flex; gap: 10px; align-items: center; }
+    .search-input {
+      flex: 1;
+      background: #12152a;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      padding: 9px 14px;
+      color: #e2e8f0; font-size: 0.88rem;
+      outline: none; transition: border-color 0.2s;
+    }
+    .search-input:focus { border-color: #7c3aed; }
+    .search-input::placeholder { color: #475569; }
+    .search-limit {
+      width: 68px;
+      background: #12152a; border: 1px solid #2d3148;
+      border-radius: 8px; padding: 9px 10px;
+      color: #94a3b8; font-size: 0.85rem; outline: none;
+      text-align: center;
+    }
+    .btn-search {
+      padding: 9px 18px;
+      background: #0f766e;
+      color: white; border: none;
+      border-radius: 8px; font-size: 0.88rem;
+      font-weight: 600; cursor: pointer;
+      transition: background 0.2s; white-space: nowrap;
+    }
+    .btn-search:hover    { background: #0d9488; }
+    .btn-search:disabled { background: #3d4268; cursor: not-allowed; }
+
+    /* Search results */
+    .search-results { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .search-result-item {
+      background: #12152a;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    .search-result-item:hover { border-color: #0d9488; }
+    .search-result-header {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 8px;
+    }
+    .search-score {
+      font-size: 0.72rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 20px;
+      background: #0f2e2c; color: #2dd4bf;
+    }
+    .search-source {
+      font-size: 0.72rem; color: #475569; font-family: monospace;
+    }
+    .search-section {
+      font-size: 0.72rem; color: #64748b; margin-left: auto;
+      max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .search-content {
+      font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;
+    }
+    .search-meta {
+      margin-top: 6px;
+      display: flex; gap: 10px; flex-wrap: wrap;
+    }
+    .search-meta span { font-size: 0.7rem; color: #475569; }
+
+    /* Result header */
+    .result-header {
+      display: flex; align-items: flex-start;
+      justify-content: space-between; margin-bottom: 24px;
+      gap: 16px;
+    }
+    .result-title { font-size: 1.1rem; font-weight: 700; color: #a78bfa; }
+    .result-meta  { font-size: 0.8rem; color: #64748b; margin-top: 4px; }
+    .btn-json-group { display: flex; gap: 7px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+    .btn-json {
+      padding: 7px 14px; background: #1e2235;
+      color: #94a3b8; border: 1px solid #2d3148;
+      border-radius: 7px; font-size: 0.8rem; cursor: pointer;
+      white-space: nowrap; flex-shrink: 0;
+      transition: all 0.15s;
+    }
+    .btn-json:hover        { border-color: #a78bfa; color: #a78bfa; }
+    .btn-json.copy:hover   { border-color: #38bdf8; color: #38bdf8; }
+    .btn-json.dl:hover     { border-color: #4ade80; color: #4ade80; }
+    .btn-json.index:hover  { border-color: #2dd4bf; color: #2dd4bf; }
+    .btn-json.index:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Chunks */
+    .chunks-grid { display: flex; flex-direction: column; gap: 14px; }
+
+    .chunk {
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .chunk-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: #12152a;
+      border-bottom: 1px solid #2d3148;
+      font-size: 0.75rem; color: #64748b;
+    }
+    .chunk-type {
+      font-size: 0.7rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 20px;
+    }
+    .type-text  { background: #1e3a5f; color: #60a5fa; }
+    .type-table { background: #14532d; color: #4ade80; }
+    .type-image { background: #4a1942; color: #e879f9; }
+
+    .chunk-body { padding: 14px 16px; }
+    .chunk-text {
+      font-size: 0.85rem; line-height: 1.7;
+      color: #cbd5e1; white-space: pre-wrap; word-break: break-word;
+    }
+    .chunk-table { overflow-x: auto; }
+    .chunk-table table {
+      width: 100%; border-collapse: collapse; font-size: 0.82rem;
+    }
+    .chunk-table th {
+      background: #12152a; color: #a78bfa;
+      padding: 8px 12px; text-align: left;
+      border-bottom: 2px solid #2d3148;
+    }
+    .chunk-table td {
+      padding: 7px 12px; border-bottom: 1px solid #1e2235; color: #cbd5e1;
+    }
+    .chunk-table tr:last-child td { border-bottom: none; }
+    .chunk-table tr:hover td { background: #12152a; }
+    .chunk-image { display: flex; gap: 16px; align-items: flex-start; }
+    .chunk-image img {
+      max-width: 220px; max-height: 180px;
+      border-radius: 6px; border: 1px solid #2d3148;
+      object-fit: contain; background: #12152a;
+    }
+    .chunk-caption { font-size: 0.82rem; color: #94a3b8; line-height: 1.6; }
+    .chunk-caption em { color: #64748b; font-style: italic; }
+
+    /* JSON modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #1a1d2e; border: 1px solid #2d3148;
+      border-radius: 12px; width: 90%; max-width: 800px;
+      max-height: 85vh; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid #2d3148;
+    }
+    .modal-header h3 { font-size: 0.9rem; color: #a78bfa; }
+    .modal-close {
+      background: none; border: none; color: #64748b;
+      font-size: 1.2rem; cursor: pointer; line-height: 1;
+    }
+    .modal-close:hover { color: #e2e8f0; }
+    .modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+    pre.json-view {
+      font-size: 0.78rem; line-height: 1.6;
+      color: #a5f3fc; white-space: pre-wrap; word-break: break-all;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: #1e2235; border: 1px solid #2d3148;
+      color: #e2e8f0; padding: 10px 18px; border-radius: 8px;
+      font-size: 0.85rem; opacity: 0; pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #toast.show { opacity: 1; }
+
+    /* ── CSV import card ── */
+    .csv-import-card {
+      background: #14532d22;
+      border: 1px solid #166534;
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .csv-import-card .csv-title {
+      font-size: 1rem; font-weight: 700; color: #4ade80; margin-bottom: 6px;
+    }
+    .csv-import-card .csv-meta { font-size: 0.82rem; color: #94a3b8; margin-bottom: 10px; }
+    .csv-columns-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .csv-col-badge {
+      font-size: 0.72rem; padding: 3px 10px;
+      background: #1e3a5f; color: #60a5fa;
+      border-radius: 20px; font-family: monospace;
+    }
+
+    /* ── Query panel ── */
+    .query-panel {
+      background: #1a1d2e; border: 1px solid #2d3148;
+      border-radius: 10px; padding: 18px 20px; margin-bottom: 16px;
+    }
+    .query-panel h3 {
+      font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #64748b; margin-bottom: 12px;
+    }
+    .query-input-row { display: flex; gap: 10px; }
+    .query-input {
+      flex: 1; background: #12152a; border: 1px solid #2d3148;
+      border-radius: 8px; padding: 9px 14px;
+      color: #e2e8f0; font-size: 0.88rem;
+      outline: none; transition: border-color 0.2s;
+    }
+    .query-input:focus { border-color: #7c3aed; }
+    .query-input::placeholder { color: #475569; }
+    .btn-query {
+      padding: 9px 18px; background: #7c3aed;
+      color: white; border: none; border-radius: 8px;
+      font-size: 0.88rem; font-weight: 600; cursor: pointer;
+      transition: background 0.2s; white-space: nowrap;
+    }
+    .btn-query:hover    { background: #6d28d9; }
+    .btn-query:disabled { background: #3d4268; cursor: not-allowed; }
+    .query-result {
+      margin-top: 14px; background: #12152a; border: 1px solid #2d3148;
+      border-radius: 8px; padding: 14px 16px; display: none;
+    }
+    .query-result.visible { display: block; }
+    .query-answer { font-size: 0.9rem; color: #e2e8f0; line-height: 1.6; margin-bottom: 10px; }
+    .query-table-badge { font-size: 0.72rem; color: #64748b; margin-bottom: 8px; }
+    .query-code-toggle {
+      font-size: 0.75rem; color: #7c3aed; cursor: pointer;
+      background: none; border: none; padding: 0; text-decoration: underline;
+    }
+    .query-code-block {
+      display: none; margin-top: 8px;
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 6px; padding: 10px 12px;
+      font-size: 0.78rem; font-family: monospace;
+      color: #a5f3fc; white-space: pre-wrap; word-break: break-all;
+    }
+    .query-code-block.visible { display: block; }
+    .query-error { font-size: 0.85rem; color: #f87171; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🔍 Document Extraction Pipeline</h1>
+  <span>RAG-ready chunk output</span>
+  <div id="qdrantStatus">
+    <div class="status-dot" id="qdrantDot"></div>
+    <span id="qdrantLabel">Qdrant …</span>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+
+    <div class="sidebar-section">
+      <h2>Upload File</h2>
+
+      <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="icon">📄</div>
+        <p><strong>Click to browse</strong> or drag &amp; drop</p>
+        <p id="dropLabel" style="margin-top:6px; font-size:0.75rem;">PDF, DOCX, XLSX, JPG, PNG, CSV…</p>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.eml" />
+
+      <div class="vision-row">
+        <div class="vision-label">Image captions</div>
+        <div class="vision-seg">
+          <input type="radio" name="visionBackend" id="visionOff"   value="off"  checked />
+          <label for="visionOff">Off</label>
+          <input type="radio" name="visionBackend" id="visionLlava" value="llava" />
+          <label for="visionLlava">LLaVA (local)</label>
+          <input type="radio" name="visionBackend" id="visionGroq"  value="groq" />
+          <label for="visionGroq">Groq (cloud)</label>
+        </div>
+      </div>
+
+      <div class="ocr-row">
+        <div class="ocr-label">OCR engine</div>
+        <div class="ocr-badge">
+          <span class="ocr-dot"></span>
+          Gemma 4 · auto
+        </div>
+      </div>
+
+      <button class="btn-upload" id="uploadBtn" disabled onclick="uploadFile()">
+        Upload &amp; Extract
+      </button>
+
+      <div id="progressWrap">
+        <div class="progress-bar"><div class="progress-fill"></div></div>
+        <div id="progressMsg">Processing…</div>
+      </div>
+    </div>
+
+    <!-- ── Google Crawlers section ───────────────────────────────────────── -->
+    <div class="sidebar-section" id="crawlerSection" style="padding-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h2 style="margin:0;">Data Sources</h2>
+        <button onclick="toggleCrawlerExpanded()" id="crawlerToggleBtn"
+          style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:11px;display:flex;align-items:center;gap:4px;">
+          <span id="crawlerToggleLabel">Show</span>
+          <span id="crawlerToggleArrow">▼</span>
+        </button>
+      </div>
+
+      <div id="crawlerBody" style="display:none;">
+        <!-- Tabs -->
+        <div style="display:flex;gap:4px;margin-bottom:12px;background:rgba(255,255,255,0.04);border:1px solid #2d3148;border-radius:8px;padding:4px;">
+          <button id="tabGmail" onclick="setCrawlerTab('gmail')"
+            style="flex:1;padding:6px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.15s;background:var(--accent,#5b6af0);color:white;">
+            ✉ Gmail
+          </button>
+          <button id="tabDrive" onclick="setCrawlerTab('drive')"
+            style="flex:1;padding:6px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.15s;background:transparent;color:#94a3b8;">
+            💾 Drive
+          </button>
+        </div>
+
+        <!-- Gmail form -->
+        <div id="crawlerGmail">
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Label</label>
+            <input id="cGmailLabel" type="text" value="INBOX" placeholder="INBOX"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:12px;outline:none;" />
+          </div>
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Search query <span style="color:#475569">(optional)</span></label>
+            <input id="cGmailQuery" type="text" placeholder='from:boss@example.com has:attachment'
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:12px;outline:none;" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+            <div>
+              <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">After</label>
+              <input id="cGmailAfter" type="date"
+                style="width:100%;box-sizing:border-box;padding:7px 8px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:11px;outline:none;" />
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Before</label>
+              <input id="cGmailBefore" type="date"
+                style="width:100%;box-sizing:border-box;padding:7px 8px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:11px;outline:none;" />
+            </div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Max emails</label>
+            <input id="cGmailMax" type="number" value="100" min="1" max="1000"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:12px;outline:none;" />
+          </div>
+          <button onclick="startCrawl('gmail')" id="cGmailBtn"
+            style="width:100%;padding:9px;background:#5b6af0;color:white;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:background 0.15s;">
+            ▶ Start Gmail Crawl
+          </button>
+        </div>
+
+        <!-- Drive form -->
+        <div id="crawlerDrive" style="display:none;">
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Folder ID <span style="color:#475569">(blank = My Drive root)</span></label>
+            <input id="cDriveFolderId" type="text" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:11px;outline:none;" />
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div>
+              <p style="font-size:12px;color:#e2e8f0;margin:0;">Recursive</p>
+              <p style="font-size:11px;color:#475569;margin:0;">Include sub-folders</p>
+            </div>
+            <label style="position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;">
+              <input type="checkbox" id="cDriveRecursive" style="opacity:0;width:0;height:0;" onchange="updateDriveToggle(this)">
+              <span id="driveToggleTrack" style="position:absolute;inset:0;background:rgba(255,255,255,0.12);border-radius:10px;transition:background 0.2s;"></span>
+              <span id="driveToggleThumb" style="position:absolute;top:4px;left:4px;width:12px;height:12px;background:white;border-radius:50%;transition:transform 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></span>
+            </label>
+          </div>
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">File types <span style="color:#475569">(comma-sep, blank = all)</span></label>
+            <input id="cDriveTypes" type="text" placeholder="pdf, docx, pptx, xlsx"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:12px;outline:none;" />
+          </div>
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Modified after</label>
+            <input id="cDriveAfter" type="date"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:11px;outline:none;" />
+          </div>
+          <div style="margin-bottom:10px;">
+            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;">Max files</label>
+            <input id="cDriveMax" type="number" value="200" min="1" max="1000"
+              style="width:100%;box-sizing:border-box;padding:7px 10px;background:#1e2235;border:1px solid #2d3148;border-radius:7px;color:#e2e8f0;font-size:12px;outline:none;" />
+          </div>
+          <button onclick="startCrawl('drive')" id="cDriveBtn"
+            style="width:100%;padding:9px;background:#5b6af0;color:white;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:background 0.15s;">
+            ▶ Start Drive Crawl
+          </button>
+        </div>
+
+        <!-- Active job progress -->
+        <div id="crawlerProgress" style="display:none;margin-top:12px;padding:12px;background:rgba(255,255,255,0.04);border:1px solid #2d3148;border-radius:10px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div id="crawlerSpinner" style="width:13px;height:13px;border:2px solid #5b6af0;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0;"></div>
+            <span id="crawlerStatusLabel" style="font-size:12px;font-weight:500;color:#e2e8f0;">Crawl running…</span>
+            <span id="crawlerPct" style="margin-left:auto;font-size:11px;color:#94a3b8;"></span>
+          </div>
+          <div style="width:100%;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;margin-bottom:8px;">
+            <div id="crawlerBar" style="height:100%;background:#5b6af0;border-radius:2px;width:0%;transition:width 0.4s;"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:8px;">
+            <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;">
+              <p id="crawlerIndexed" style="font-size:15px;font-weight:600;color:#4ade80;margin:0;">0</p>
+              <p style="font-size:10px;color:#94a3b8;margin:0;">Indexed</p>
+            </div>
+            <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;">
+              <p id="crawlerSkipped" style="font-size:15px;font-weight:600;color:#94a3b8;margin:0;">0</p>
+              <p style="font-size:10px;color:#94a3b8;margin:0;">Skipped</p>
+            </div>
+            <div style="background:rgba(255,255,255,0.03);border-radius:6px;padding:6px;">
+              <p id="crawlerErrors" style="font-size:15px;font-weight:600;color:#f87171;margin:0;">0</p>
+              <p style="font-size:10px;color:#94a3b8;margin:0;">Errors</p>
+            </div>
+          </div>
+          <p id="crawlerCurrent" style="font-size:10px;color:#475569;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></p>
+        </div>
+
+        <!-- History -->
+        <div style="margin-top:12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <span style="font-size:10px;font-weight:600;letter-spacing:0.08em;color:#475569;text-transform:uppercase;">History</span>
+            <button onclick="loadCrawlHistory()" style="background:none;border:none;cursor:pointer;color:#475569;font-size:10px;" title="Refresh">↻</button>
+          </div>
+          <div id="crawlerHistory" style="font-size:11px;color:#475569;text-align:center;padding:8px 0;">No runs yet</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="flex:1; overflow:hidden; display:flex; flex-direction:column; padding-bottom:0;">
+      <h2>Processed Files</h2>
+      <div class="file-list" id="fileList">
+        <p style="font-size:0.8rem; color:#475569; text-align:center; margin-top:16px;">No files yet</p>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ── Main ── -->
+  <main class="main" id="mainPanel">
+    <div class="placeholder">
+      <div class="big-icon">📂</div>
+      <p>Upload a file to see extracted chunks</p>
+    </div>
+  </main>
+
+</div>
+
+<!-- JSON modal -->
+<div class="modal-overlay" id="jsonModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Raw JSON Output</h3>
+      <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+        <button class="btn-json copy" onclick="copyJson()" style="padding:5px 11px; font-size:0.75rem;">⧉ Copy</button>
+        <button class="btn-json dl"   onclick="downloadJson()" style="padding:5px 11px; font-size:0.75rem;">⬇ Download</button>
+        <button class="modal-close"   onclick="closeModal()">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <pre class="json-view" id="jsonView"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let currentData     = null;
+  let currentFile     = null;   // result filename currently loaded
+  let qdrantOnline    = false;
+  const indexedFiles  = new Set();
+
+  // ── Session persistence across page refreshes ─────────────────────────────
+  // memorySessionId lives in sessionStorage so it survives F5 but not a new tab.
+  let memorySessionId = sessionStorage.getItem('memorySessionId') || null;
+
+  // ── API key helper (no-op — server runs in open dev mode) ─────────────────
+  function _apiHeaders() { return {}; }
+
+  // ── Drag & drop ────────────────────────────────────────────────────────────
+  const dropZone  = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const uploadBtn = document.getElementById('uploadBtn');
+
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+
+  function setFile(f) {
+    document.getElementById('dropLabel').textContent = f.name;
+    uploadBtn.disabled = false;
+    uploadBtn._file = f;
+  }
+
+  // ── Upload ─────────────────────────────────────────────────────────────────
+  async function uploadFile() {
+    const file          = uploadBtn._file;
+    const visionBackend = document.querySelector('input[name="visionBackend"]:checked').value;
+    const caption       = visionBackend !== 'off';
+    if (!file) return;
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('caption', caption);
+    if (caption) fd.append('caption_backend', visionBackend);
+
+    setLoading(true, 'Extracting content…');
+
+    try {
+      const res  = await fetch('/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+      currentData = data;
+      await loadFileList();
+
+      // Auto-select the newest result
+      const listRes  = await fetch('/results');
+      const listData = await listRes.json();
+      if (listData.results.length) {
+        const newest = listData.results[0].file;
+        currentFile = newest;
+        renderResult(data, newest);
+        highlightFileItem(newest);
+      }
+
+      toast('✅ Extraction complete');
+    } catch (err) {
+      toast('❌ ' + err.message, true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Render result ──────────────────────────────────────────────────────────
+  function renderResult(data, filename) {
+    if (data.type === 'csv_import') { renderCsvResult(data); return; }
+
+    const stats  = data.stats  || {};
+    const chunks = data.chunks || [];
+
+    const alreadyIndexed = filename && indexedFiles.has(filename);
+    const indexBtnLabel  = alreadyIndexed ? '✓ Indexed' : '⬆ Index';
+    const indexBtnStyle  = alreadyIndexed ? 'opacity:0.5; cursor:default;' : '';
+
+    document.getElementById('mainPanel').innerHTML = `
+      <!-- Ask AI panel -->
+      <div class="ask-panel">
+        <div class="ask-panel-header">
+          <h3>🤖 Ask AI</h3>
+          <span class="ask-backend-badge" id="askBackendBadge">Qwen2.5-7B · Ollama</span>
+        </div>
+        <div class="ask-input-row">
+          <input class="ask-input" id="askInput"
+            placeholder="Ask a question across all indexed documents…"
+            onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); runAsk(); }" />
+          <button class="btn-ask" id="askBtn" onclick="runAsk()"
+            ${qdrantOnline ? '' : 'disabled'}>Ask</button>
+        </div>
+        <div class="ask-options">
+          <label class="ask-option-label">
+            <input type="checkbox" id="askRerank" /> Rerank
+          </label>
+          <label class="ask-option-label">
+            <input type="checkbox" id="askMultiHop" /> Multi-hop
+          </label>
+          <label class="ask-option-label">
+            <input type="checkbox" id="askHyde" /> HyDE
+          </label>
+          <label class="ask-option-label">
+            <input type="checkbox" id="askMmr" /> MMR
+          </label>
+          <label class="ask-option-label" title="Run LLM-as-a-Judge after generation (adds ~5-10s via Groq)">
+            <input type="checkbox" id="askJudge" /> Judge
+          </label>
+          <label class="ask-option-label" title="Enable conversation memory — session persists across questions">
+            <input type="checkbox" id="askMemory" onchange="onMemoryToggle(this.checked)" /> Memory
+          </label>
+          <label class="ask-option-label" title="Enable customer support mode — intent classification, escalation, and empathetic persona">
+            <input type="checkbox" id="askSupportMode" /> Support mode
+          </label>
+          <div class="ask-limit-wrap">
+            Chunks: <input class="ask-limit" id="askLimit" type="number" value="5" min="1" max="20" />
+          </div>
+        </div>
+        <div class="ask-answer-wrap" id="askAnswerWrap">
+          <div class="ask-answer-box" id="askAnswerBox"></div>
+          <div class="ask-meta-row" id="askMetaRow"></div>
+          <div class="ask-sources" id="askSources"></div>
+          <div id="askEscalationBanner" style="display:none"></div>
+          <div id="askFeedbackRow" style="display:none"></div>
+          <div id="askJudgePanel"></div>
+          <div id="memoryPanel" class="memory-panel" style="display:none">
+            <div class="memory-header"
+              onclick="this.nextElementSibling.classList.toggle('open'); this.querySelector('.memory-chevron').style.transform = this.nextElementSibling.classList.contains('open') ? 'rotate(180deg)' : ''">
+              <span class="memory-title">🧠 Memory</span>
+              <span style="display:flex;align-items:center;gap:8px">
+                <span class="memory-chevron">▼</span>
+              </span>
+            </div>
+            <div class="memory-body open">
+              <div class="memory-session-row">
+                <span class="memory-session-label">Session</span>
+                <span class="memory-session-badge" id="memorySessionBadge">new session</span>
+                <button class="memory-reset-btn" id="memoryResetBtn"
+                  onclick="resetMemorySession()" title="Start a new session (clears conversation history)">
+                  ✕ New session
+                </button>
+              </div>
+              <div id="memoryFactsSection">
+                <div class="memory-empty">No user facts stored yet.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Search panel -->
+      <div class="search-panel">
+        <div class="search-panel-header">
+          <h3>🔎 Semantic Search</h3>
+          <span class="qdrant-hint" id="searchHint">
+            ${qdrantOnline ? 'Qdrant connected' : 'Qdrant offline — index a document first'}
+          </span>
+        </div>
+        <div class="search-input-row">
+          <input class="search-input" id="searchInput"
+            placeholder="Ask anything across all indexed documents…"
+            onkeydown="if(event.key==='Enter') runSearch()" />
+          <input class="search-limit" id="searchLimit" type="number"
+            value="5" min="1" max="50" title="Max results" />
+          <button class="btn-search" id="searchBtn" onclick="runSearch()"
+            ${qdrantOnline ? '' : 'disabled'}>Search</button>
+        </div>
+        <div id="searchResults"></div>
+      </div>
+
+      <!-- Document result header -->
+      <div class="result-header">
+        <div>
+          <div class="result-title">📄 ${escHtml(data.source_file)}</div>
+          <div class="result-meta">
+            ${stats.text_chunks ?? 0} text &nbsp;·&nbsp;
+            ${stats.table_chunks ?? 0} tables &nbsp;·&nbsp;
+            ${stats.image_chunks ?? 0} images &nbsp;·&nbsp;
+            ${stats.total_tokens ?? 0} tokens
+          </div>
+        </div>
+        <div class="btn-json-group">
+          <button class="btn-json index" id="indexBtn"
+            style="${indexBtnStyle}"
+            onclick="indexDocument('${escHtml(filename || '')}', this)">
+            ${indexBtnLabel}
+          </button>
+          <button class="btn-json" onclick="showJson()">{ } View JSON</button>
+          <button class="btn-json copy" onclick="copyJson()">⧉ Copy JSON</button>
+          <button class="btn-json dl"   onclick="downloadJson()">⬇ Download JSON</button>
+        </div>
+      </div>
+      <div class="chunks-grid" id="chunksGrid"></div>`;
+
+    const grid = document.getElementById('chunksGrid');
+    chunks.forEach(chunk => grid.appendChild(buildChunk(chunk)));
+  }
+
+  // ── Index document into Qdrant ─────────────────────────────────────────────
+  async function indexDocument(filename, btn) {
+    if (!filename || !qdrantOnline) return;
+    if (btn.textContent.trim() === '✓ Indexed') return;
+
+    btn.disabled    = true;
+    btn.textContent = '⏳ Indexing…';
+
+    try {
+      const res  = await fetch('/index', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ result_file: filename }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Indexing failed');
+
+      indexedFiles.add(filename);
+      btn.textContent  = '✓ Indexed';
+      btn.style.opacity = '0.5';
+      btn.style.cursor  = 'default';
+
+      // Update badge in file list
+      const badge = document.getElementById(`indexed-badge-${filename}`);
+      if (badge) badge.style.display = 'inline-block';
+
+      toast(`✅ Indexed ${data.indexed} chunks into Qdrant`);
+
+      // Enable search
+      const searchBtn = document.getElementById('searchBtn');
+      if (searchBtn) searchBtn.disabled = false;
+      const searchHint = document.getElementById('searchHint');
+      if (searchHint) searchHint.textContent = 'Qdrant connected';
+
+    } catch (err) {
+      btn.disabled    = false;
+      btn.textContent = '⬆ Index';
+      toast('❌ ' + err.message, true);
+    }
+  }
+
+  // ── Semantic search ────────────────────────────────────────────────────────
+  async function runSearch() {
+    const input  = document.getElementById('searchInput');
+    const limit  = parseInt(document.getElementById('searchLimit')?.value || '5', 10);
+    const btn    = document.getElementById('searchBtn');
+    const q      = input?.value.trim();
+    if (!q) return;
+
+    btn.disabled    = true;
+    btn.textContent = 'Searching…';
+
+    const container = document.getElementById('searchResults');
+    container.innerHTML = '';
+
+    try {
+      const res  = await fetch('/search', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ query: q, limit }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Search failed');
+
+      if (!data.results.length) {
+        container.innerHTML = '<p style="font-size:0.82rem;color:#475569;margin-top:10px;">No results found.</p>';
+        return;
+      }
+
+      container.innerHTML = `<div class="search-results">${
+        data.results.map(r => {
+          const meta    = r.metadata || {};
+          const section = meta.section || '';
+          const source  = meta.source  || '';
+          const lang    = meta.language ? ` · ${meta.language}` : '';
+          const page    = meta.page_start ? ` · p.${meta.page_start}` : '';
+          const tokens  = meta.token_count ? ` · ${meta.token_count} tok` : '';
+          return `
+            <div class="search-result-item">
+              <div class="search-result-header">
+                <span class="search-score">${r.score.toFixed(4)}</span>
+                <span class="search-source">${escHtml(source)}${page}${lang}${tokens}</span>
+                ${section ? `<span class="search-section">${escHtml(section)}</span>` : ''}
+              </div>
+              <div class="search-content">${escHtml(r.content)}</div>
+            </div>`;
+        }).join('')
+      }</div>`;
+
+    } catch (err) {
+      container.innerHTML = `<p style="font-size:0.82rem;color:#f87171;margin-top:10px;">❌ ${escHtml(err.message)}</p>`;
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = 'Search';
+    }
+  }
+
+  // ── CSV import result ──────────────────────────────────────────────────────
+  function renderCsvResult(data) {
+    const colBadges = (data.columns || [])
+      .map(c => `<span class="csv-col-badge">${escHtml(c)}</span>`).join('');
+
+    document.getElementById('mainPanel').innerHTML = `
+      <div class="csv-import-card">
+        <div class="csv-title">🗄️ ${escHtml(data.source_file)}</div>
+        <div class="csv-meta">
+          Imported as table <strong style="color:#4ade80">${escHtml(data.table)}</strong>
+          &nbsp;·&nbsp; ${data.rows} rows &nbsp;·&nbsp; ${data.cols} columns
+        </div>
+        <div class="csv-columns-wrap">${colBadges}</div>
+      </div>
+
+      <div class="query-panel">
+        <h3>Ask a question about this data</h3>
+        <div class="query-input-row">
+          <input class="query-input" id="queryInput"
+            placeholder="e.g. What is the average value in column X?"
+            onkeydown="if(event.key==='Enter') runQuery('${escHtml(data.table)}')" />
+          <button class="btn-query" id="queryBtn"
+            onclick="runQuery('${escHtml(data.table)}')">Ask</button>
+        </div>
+        <div class="query-result" id="queryResult"></div>
+      </div>`;
+  }
+
+  // ── CSV NL query ───────────────────────────────────────────────────────────
+  async function runQuery(table) {
+    const input  = document.getElementById('queryInput');
+    const btn    = document.getElementById('queryBtn');
+    const result = document.getElementById('queryResult');
+    const q      = input.value.trim();
+    if (!q) return;
+
+    btn.disabled    = true;
+    btn.textContent = 'Thinking…';
+    result.className = 'query-result';
+    result.innerHTML = '';
+
+    try {
+      const res  = await fetch('/query', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ question: q, table }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Query failed');
+
+      const codeId = 'code_' + Date.now();
+      result.innerHTML = `
+        <div class="query-table-badge">Table: ${escHtml(data.table || '—')}</div>
+        <div class="query-answer">${escHtml(data.answer)}</div>
+        ${data.code ? `
+          <button class="query-code-toggle" onclick="
+            const b=document.getElementById('${codeId}');
+            b.classList.toggle('visible');
+            this.textContent=b.classList.contains('visible')?'Hide code':'Show generated code';
+          ">Show generated code</button>
+          <pre class="query-code-block" id="${codeId}">${escHtml(data.code)}</pre>
+        ` : ''}
+        ${!data.success && data.error ? `<div class="query-error">⚠️ ${escHtml(data.error)}</div>` : ''}`;
+      result.classList.add('visible');
+
+    } catch (err) {
+      result.innerHTML = `<div class="query-error">❌ ${escHtml(err.message)}</div>`;
+      result.classList.add('visible');
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = 'Ask';
+    }
+  }
+
+  // ── Memory session management ─────────────────────────────────────────────
+
+  function onMemoryToggle(enabled) {
+    const panel = document.getElementById('memoryPanel');
+    if (!panel) return;
+    panel.style.display = enabled ? 'block' : 'none';
+    if (enabled) updateSessionDisplay();
+  }
+
+  async function ensureSession() {
+    if (memorySessionId) return memorySessionId;
+    try {
+      const res  = await fetch('/sessions', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json', ..._apiHeaders() },
+        body   : '{}',
+      });
+      const data = await res.json();
+      memorySessionId = data.session_id;
+      sessionStorage.setItem('memorySessionId', memorySessionId);  // persist across refresh
+      updateSessionDisplay();
+      return memorySessionId;
+    } catch (err) {
+      console.warn('[Memory] Could not create session:', err);
+      return null;
+    }
+  }
+
+  async function resetMemorySession() {
+    if (memorySessionId) {
+      fetch(`/sessions/${memorySessionId}`, {
+        method: 'DELETE',
+        headers: _apiHeaders(),
+      }).catch(() => {});
+    }
+    memorySessionId = null;
+    sessionStorage.removeItem('memorySessionId');  // clear persisted session
+    updateSessionDisplay();
+    const factsSection = document.getElementById('memoryFactsSection');
+    if (factsSection) factsSection.innerHTML = '<div class="memory-empty">No user facts stored yet.</div>';
+    toast('🔄 Memory session reset');
+  }
+
+  function updateSessionDisplay() {
+    const badge    = document.getElementById('memorySessionBadge');
+    const resetBtn = document.getElementById('memoryResetBtn');
+    if (!badge) return;
+    if (memorySessionId) {
+      badge.textContent = memorySessionId.slice(0, 8) + '…';
+      badge.title       = memorySessionId;
+      if (resetBtn) resetBtn.style.display = 'inline-block';
+    } else {
+      badge.textContent = 'new session';
+      badge.title       = '';
+      if (resetBtn) resetBtn.style.display = 'none';
+    }
+  }
+
+  async function refreshMemoryPanel(sessionId) {
+    const factsSection = document.getElementById('memoryFactsSection');
+    if (!factsSection || !sessionId) return;
+    try {
+      // Fetch facts and preferences in parallel
+      const [factsRes, prefsRes] = await Promise.all([
+        fetch(`/user-facts/${encodeURIComponent(sessionId)}`,
+              { headers: _apiHeaders() }),
+        fetch(`/user-memory/${encodeURIComponent(sessionId)}`,
+              { headers: _apiHeaders() }),
+      ]);
+
+      const facts = factsRes.ok  ? ((await factsRes.json()).facts || {}) : {};
+      const prefs = prefsRes.ok  ? ((await prefsRes.json()).preferences || []) : [];
+
+      const factEntries = Object.entries(facts);
+      let html = '';
+
+      if (factEntries.length > 0) {
+        html += '<div class="memory-section-title">User Facts</div>' +
+          factEntries.map(([k, v]) => `
+            <div class="memory-fact-row">
+              <div class="memory-fact-key">${escHtml(k)}</div>
+              <div class="memory-fact-val">${escHtml(v)}</div>
+            </div>`).join('');
+      }
+
+      if (prefs.length > 0) {
+        html += '<div class="memory-section-title" style="margin-top:12px">Learned Preferences</div>' +
+          prefs.map(p => `
+            <div class="memory-fact-row">
+              <div class="memory-fact-val" style="width:100%">${escHtml(p.text || p)}</div>
+            </div>`).join('');
+      }
+
+      factsSection.innerHTML = html ||
+        '<div class="memory-empty">No user facts or preferences extracted yet — keep chatting.</div>';
+
+    } catch (_) { /* silently ignore — memory panel is non-critical */ }
+  }
+
+  // ── Ask AI (streaming /ask/stream) ───────────────────────────────────────────
+  async function runAsk() {
+    const input   = document.getElementById('askInput');
+    const btn     = document.getElementById('askBtn');
+    const wrap    = document.getElementById('askAnswerWrap');
+    const box     = document.getElementById('askAnswerBox');
+    const metaRow = document.getElementById('askMetaRow');
+    const sources = document.getElementById('askSources');
+    const q       = input.value.trim();
+    if (!q) return;
+
+    btn.disabled    = true;
+    btn.textContent = '…';
+    wrap.classList.add('visible');
+    box.innerHTML   = '<span class="cursor"></span>';
+    metaRow.innerHTML = '';
+    sources.innerHTML = '';
+
+    const limit         = parseInt(document.getElementById('askLimit')?.value || '5', 10);
+    const rerank        = document.getElementById('askRerank')?.checked       || false;
+    const multiHop      = document.getElementById('askMultiHop')?.checked     || false;
+    const useHyde       = document.getElementById('askHyde')?.checked         || false;
+    const mmr           = document.getElementById('askMmr')?.checked          || false;
+    const judge         = document.getElementById('askJudge')?.checked        || false;
+    const memoryEnabled = document.getElementById('askMemory')?.checked       || false;
+    const supportMode   = document.getElementById('askSupportMode')?.checked  || false;
+
+    const judgePanel      = document.getElementById('askJudgePanel');
+    const escalationBanner = document.getElementById('askEscalationBanner');
+    const feedbackRow      = document.getElementById('askFeedbackRow');
+    judgePanel.innerHTML       = '';
+    escalationBanner.style.display = 'none';
+    escalationBanner.innerHTML = '';
+    feedbackRow.style.display  = 'none';
+    feedbackRow.innerHTML      = '';
+
+    // Ensure a session exists when memory is enabled
+    let sessionId = null;
+    if (memoryEnabled) {
+      sessionId = await ensureSession();
+    }
+
+    const reqBody = { question: q, limit, rerank, multi_hop: multiHop, use_hyde: useHyde, mmr, judge, support_mode: supportMode };
+    if (sessionId) {
+      reqBody.session_id     = sessionId;
+      reqBody.memory_enabled = true;
+    }
+    const body = JSON.stringify(reqBody);
+
+    let answerText = '';
+    let t0 = Date.now();
+
+    try {
+      const res = await fetch('/ask/stream', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Request failed');
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop();   // keep incomplete last line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (evt.type === 'sources') {
+            // Render source chips immediately — before any tokens
+            if (evt.sources && evt.sources.length) {
+              sources.innerHTML = '<div class="ask-sources-title">Sources</div>' +
+                evt.sources.map(s => {
+                  const score   = s.score ? s.score.toFixed(4) : '—';
+                  const page    = s.page_start ? ` p.${s.page_start}` : '';
+                  const section = s.section ? `<span class="chip-section">${escHtml(s.section)}</span>` : '';
+                  return `<span class="ask-source-chip">
+                    <span class="chip-score">${score}</span>
+                    ${escHtml(s.source)}${page}
+                    ${section}
+                  </span>`;
+                }).join('');
+            }
+          }
+
+          else if (evt.type === 'token') {
+            answerText += evt.content;
+            box.innerHTML = escHtml(answerText) + '<span class="cursor"></span>';
+            box.scrollTop = box.scrollHeight;
+          }
+
+          else if (evt.type === 'escalation') {
+            const reasonLabels = {
+              explicit_request: 'Explicit escalation request',
+              complaint:        'Complaint detected',
+              no_answer:        'No answer found',
+              low_quality:      'Low answer quality',
+              low_confidence:   'Low confidence',
+            };
+            const intentBadge = evt.intent
+              ? `<span class="escalation-intent-badge">${escHtml(evt.intent)}</span>` : '';
+            escalationBanner.style.display = 'block';
+            escalationBanner.innerHTML = `
+              <div class="escalation-banner">
+                <span class="escalation-icon">🚨</span>
+                <div class="escalation-body">
+                  <div class="escalation-title">Escalating to human support${intentBadge}</div>
+                  <div class="escalation-msg">${escHtml(evt.message || '')}</div>
+                  <div class="escalation-reason">${reasonLabels[evt.reason] || evt.reason || ''}</div>
+                </div>
+              </div>`;
+          }
+
+          else if (evt.type === 'done') {
+            // Remove cursor, show final answer
+            box.textContent = answerText;
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            const conf    = evt.confidence;
+            const confHtml = conf != null
+              ? `<span class="ask-confidence${conf < 0.5 ? ' low' : ''}">
+                   confidence ${(conf * 100).toFixed(0)}%
+                 </span>`
+              : '';
+
+            // Rewrite tier badge
+            let rewriteHtml = '';
+            if (evt.rewritten_question && evt.rewrite_tier && evt.rewrite_tier !== 'skip') {
+              const tierLabel = evt.rewrite_tier === 'llm' ? 'LLM rewrite' : 'entity inject';
+              rewriteHtml = `<span class="rewrite-badge" title="Rewritten: ${escHtml(evt.rewritten_question)}">🔄 ${tierLabel}</span>`;
+            }
+
+            metaRow.innerHTML = `${confHtml}${rewriteHtml}<span>${elapsed}s</span>`;
+
+            // Refresh memory panel facts (runs in background — non-blocking)
+            if (memoryEnabled && sessionId) {
+              refreshMemoryPanel(sessionId);
+            }
+
+            // Judge panel
+            if (judge) {
+              if (evt.judge) {
+                renderJudgePanel(judgePanel, evt.judge);
+              } else {
+                // judge=true was sent but result not yet ready or failed silently
+                judgePanel.innerHTML = `<div class="judge-panel">
+                  <div class="judge-header">
+                    <span class="judge-title">⚖️ Judge</span>
+                    <span class="judge-overall bad">unavailable</span>
+                  </div>
+                </div>`;
+              }
+            }
+
+            // Feedback row (always shown when support_mode — lets the user rate the answer)
+            if (supportMode) {
+              renderFeedbackRow(feedbackRow, {
+                question:    q,
+                answer:      answerText,
+                intent:      evt.intent?.intent || '',
+                escalated:   !!evt.escalated,
+                escalation_reason: evt.escalation?.reason || '',
+                eval_verdict: evt.eval_verdict || '',
+                confidence:  evt.confidence,
+                elapsed_ms:  Date.now() - t0,
+                session_id:  sessionId || '',
+              });
+            }
+          }
+        }
+      }
+
+    } catch (err) {
+      box.textContent = '❌ ' + err.message;
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = 'Ask';
+    }
+  }
+
+  // ── Render LLM-as-a-Judge panel ───────────────────────────────────────────
+  function renderJudgePanel(container, judge) {
+    const overall = judge.overall;
+    const pct     = overall != null ? (overall * 100).toFixed(0) : null;
+    const cls     = overall == null ? 'bad'
+                  : overall >= 0.85 ? 'good'
+                  : overall >= 0.65 ? 'mid'
+                  : overall >= 0.45 ? 'low' : 'bad';
+    const overallLabel = pct != null ? `${pct}%` : 'N/A';
+
+    const DIM_LABELS = {
+      faithfulness:      'Faithfulness',
+      answer_relevance:  'Relevance',
+      context_relevance: 'Context',
+      completeness:      'Completeness',
+      citation_accuracy: 'Citations',
+      correctness:       'Correctness',
+    };
+    const DIM_WEIGHTS = {
+      faithfulness: 35, answer_relevance: 25,
+      context_relevance: 15, completeness: 15, citation_accuracy: 10,
+      correctness: 30,
+    };
+
+    const dimRows = Object.entries(judge.dimensions || {}).flatMap(([key, dim]) => {
+      // Hide correctness row entirely when no reference was provided (score is null and reasoning says "skipped")
+      if (key === 'correctness' && dim.score == null &&
+          dim.reasoning && dim.reasoning.toLowerCase().includes('no reference')) {
+        return [];
+      }
+      const score   = dim.score;
+      const pctFill = score != null ? (score * 100).toFixed(0) : 0;
+      const scoreStr = score != null ? score.toFixed(2) : 'N/A';
+      const weight  = DIM_WEIGHTS[key] || '';
+      const label   = DIM_LABELS[key]  || key;
+      const skipped = score == null;
+      // Highlight correctness row with a subtle left border
+      const extraStyle = key === 'correctness' ? 'border-left:2px solid #818cf8;padding-left:6px;' : '';
+      return [`
+        <div class="judge-dim-row" style="${extraStyle}">
+          <div class="judge-dim-name">${label} <span style="color:#2d3148;font-size:0.65rem">${weight ? weight+'%' : ''}</span></div>
+          <div class="judge-dim-bar-wrap">
+            <div class="judge-dim-bar-bg">
+              <div class="judge-dim-bar-fill" style="width:${skipped ? 0 : pctFill}%"></div>
+            </div>
+            <div class="judge-dim-score" style="${skipped ? 'color:#2d3148' : ''}">${scoreStr}</div>
+          </div>
+          ${dim.reasoning ? `<div class="judge-dim-reasoning">${escHtml(dim.reasoning)}</div>` : ''}
+        </div>`];
+    }).join('');
+
+    const elapsed = judge.elapsed_ms != null ? `${(judge.elapsed_ms / 1000).toFixed(1)}s` : '';
+    const modelStr = judge.model ? `<span style="color:#2d3148;margin-left:8px">${escHtml(judge.model)}</span>` : '';
+
+    // ── Per-chunk scores breakdown ─────────────────────────────────────────
+    let chunkScoresHtml = '';
+    if (Array.isArray(judge.chunk_scores) && judge.chunk_scores.length > 0) {
+      const rows = judge.chunk_scores.map(c => {
+        const s      = c.score != null ? c.score : null;
+        const pct    = s != null ? (s * 100).toFixed(0) : 0;
+        const sStr   = s != null ? s.toFixed(2) : 'N/A';
+        const skipped = s == null;
+        // colour the bar by score level
+        const barColor = s == null    ? '#2d3148'
+                       : s >= 0.85   ? '#22c55e'
+                       : s >= 0.65   ? '#a3e635'
+                       : s >= 0.45   ? '#f59e0b'
+                       :               '#f87171';
+        const preview  = c.preview ? escHtml(c.preview) : '';
+        const reason   = c.reasoning ? escHtml(c.reasoning) : '';
+        return `
+          <div style="padding:6px 0;border-bottom:1px solid #1e2235">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+              <span style="font-size:0.68rem;color:#94a3b8;min-width:52px">Chunk ${c.chunk_idx}</span>
+              <div style="flex:1;height:6px;background:#1e2235;border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${skipped ? 0 : pct}%;background:${barColor};transition:width 0.4s"></div>
+              </div>
+              <span style="font-size:0.72rem;color:${barColor};min-width:32px;text-align:right">${sStr}</span>
+            </div>
+            ${preview ? `<div style="font-size:0.67rem;color:#64748b;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%">"${preview}"</div>` : ''}
+            ${reason  ? `<div style="font-size:0.68rem;color:#94a3b8;margin-top:2px">${reason}</div>` : ''}
+          </div>`;
+      }).join('');
+      chunkScoresHtml = `
+        <div style="margin-top:10px">
+          <div style="font-size:0.7rem;font-weight:600;color:#94a3b8;letter-spacing:0.05em;margin-bottom:4px;text-transform:uppercase">Per-Chunk Relevance</div>
+          ${rows}
+        </div>`;
+    }
+
+    container.innerHTML = `
+      <div class="judge-panel">
+        <div class="judge-header" onclick="this.nextElementSibling.classList.toggle('open'); this.querySelector('.judge-chevron').style.transform = this.nextElementSibling.classList.contains('open') ? 'rotate(180deg)' : ''">
+          <span class="judge-title">⚖️ Judge ${modelStr}</span>
+          <span style="display:flex;align-items:center;gap:8px">
+            ${elapsed ? `<span style="font-size:0.68rem;color:#475569">${elapsed}</span>` : ''}
+            <span class="judge-overall ${cls}">${overallLabel}</span>
+            <span class="judge-chevron">▼</span>
+          </span>
+        </div>
+        <div class="judge-body open">
+          ${dimRows}
+          ${chunkScoresHtml}
+          ${judge.error ? `<div style="margin-top:8px;color:#f87171;font-size:0.72rem">Error: ${escHtml(judge.error)}</div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  // ── Feedback row (thumbs up / down) ───────────────────────────────────────
+  function renderFeedbackRow(container, meta) {
+    if (!container) return;
+    let submitted = false;
+
+    container.innerHTML = `
+      <div class="feedback-row">
+        <span style="font-size:0.75rem;color:#94a3b8;margin-right:6px">Was this helpful?</span>
+        <button class="feedback-btn" id="fbUp" title="Helpful">👍</button>
+        <button class="feedback-btn" id="fbDown" title="Not helpful">👎</button>
+        <span class="feedback-sent" id="fbSent" style="display:none">Feedback sent ✓</span>
+      </div>`;
+
+    const btnUp   = container.querySelector('#fbUp');
+    const btnDown = container.querySelector('#fbDown');
+    const fbSent  = container.querySelector('#fbSent');
+
+    async function submitFeedback(rating) {
+      if (submitted) return;
+      submitted = true;
+
+      btnUp.disabled   = true;
+      btnDown.disabled = true;
+      if (rating === 1)  btnUp.classList.add('active-up');
+      if (rating === -1) btnDown.classList.add('active-down');
+
+      try {
+        const payload = {
+          rating,
+          question:          meta.question          || '',
+          answer:            meta.answer            || '',
+          intent:            meta.intent            || '',
+          escalated:         !!meta.escalated,
+          escalation_reason: meta.escalation_reason || '',
+          eval_verdict:      meta.eval_verdict      || '',
+          confidence:        meta.confidence        ?? null,
+          elapsed_ms:        meta.elapsed_ms        ?? null,
+          session_id:        meta.session_id        || '',
+        };
+        const headers = { 'Content-Type': 'application/json' };
+        await fetch('/feedback', { method: 'POST', headers, body: JSON.stringify(payload) });
+      } catch (_) { /* fire-and-forget */ }
+
+      fbSent.style.display = 'inline';
+    }
+
+    btnUp.addEventListener('click',   () => submitFeedback(1));
+    btnDown.addEventListener('click', () => submitFeedback(-1));
+  }
+
+  // ── Build chunk card ───────────────────────────────────────────────────────
+  function buildChunk(chunk) {
+    const el = document.createElement('div');
+    el.className = 'chunk';
+
+    // New schema: content + metadata.page_start
+    const content  = chunk.content  ?? chunk.text ?? '';
+    const meta     = chunk.metadata ?? {};
+    const page     = meta.page_start ?? chunk.page ?? '?';
+    const section  = meta.section   ?? '';
+    const typeLabel = chunk.type.charAt(0).toUpperCase() + chunk.type.slice(1);
+    const typeClass = `type-${chunk.type}`;
+
+    el.innerHTML = `
+      <div class="chunk-header">
+        <span class="chunk-type ${typeClass}">${typeLabel}</span>
+        <span>Page ${page}</span>
+        ${section ? `<span style="color:#475569">§ ${escHtml(section)}</span>` : ''}
+        <span style="margin-left:auto; font-family:monospace; font-size:0.7rem; color:#475569">${escHtml(chunk.chunk_id)}</span>
+      </div>
+      <div class="chunk-body"></div>`;
+
+    const body = el.querySelector('.chunk-body');
+
+    if (chunk.type === 'text') {
+      body.innerHTML = `<div class="chunk-text">${escHtml(content)}</div>`;
+
+    } else if (chunk.type === 'table') {
+      // Prefer markdown display field if available, else render content as text
+      const display = meta.display || '';
+      if (display) {
+        body.innerHTML = `<div class="chunk-table">${renderMarkdownTable(display)}</div>`;
+      } else {
+        body.innerHTML = `<div class="chunk-text">${escHtml(content)}</div>`;
+      }
+
+    } else if (chunk.type === 'image') {
+      const imgTag = chunk.image_url
+        ? `<img src="${chunk.image_url}" alt="extracted image" onerror="this.style.display='none'">`
+        : '';
+      const caption = content || '<em>No caption available</em>';
+      body.innerHTML = `<div class="chunk-image">
+        ${imgTag}
+        <div class="chunk-caption">${content ? escHtml(content) : '<em>No caption available</em>'}</div>
+      </div>`;
+    }
+
+    return el;
+  }
+
+  // Parse simple markdown table → HTML table
+  function renderMarkdownTable(md) {
+    const lines = md.trim().split('\n').filter(l => l.trim().startsWith('|'));
+    if (lines.length < 2) return `<pre style="font-size:0.8rem;color:#94a3b8">${escHtml(md)}</pre>`;
+
+    const parseRow = l => l.split('|').slice(1, -1).map(c => c.trim());
+    const headers  = parseRow(lines[0]);
+    const dataRows = lines.slice(2); // skip separator line
+
+    const thead = `<thead><tr>${headers.map(h => `<th>${escHtml(h)}</th>`).join('')}</tr></thead>`;
+    const tbody = `<tbody>${dataRows.map(r =>
+      `<tr>${parseRow(r).map(c => `<td>${escHtml(c)}</td>`).join('')}</tr>`
+    ).join('')}</tbody>`;
+
+    return `<table>${thead}${tbody}</table>`;
+  }
+
+  // ── File list ──────────────────────────────────────────────────────────────
+  async function loadFileList() {
+    const res  = await fetch('/results');
+    const data = await res.json();
+    const list = document.getElementById('fileList');
+
+    if (!data.results.length) {
+      list.innerHTML = '<p style="font-size:0.8rem; color:#475569; text-align:center; margin-top:16px;">No files yet</p>';
+      return;
+    }
+
+    list.innerHTML = data.results.map(r => {
+      const isCsv = r.type === 'csv_import';
+      const icon  = isCsv ? '🗄️' : '📄';
+      const isIdx = indexedFiles.has(r.file);
+      const badges = isCsv
+        ? `<span class="badge badge-table">${r.stats.rows ?? ''} rows</span>`
+        : `
+          ${r.stats.text_chunks  ? `<span class="badge badge-text">${r.stats.text_chunks} text</span>` : ''}
+          ${r.stats.table_chunks ? `<span class="badge badge-table">${r.stats.table_chunks} tables</span>` : ''}
+          ${r.stats.image_chunks ? `<span class="badge badge-image">${r.stats.image_chunks} images</span>` : ''}`;
+
+      return `
+        <div class="file-item" onclick="loadResult('${r.file}')" id="item-${r.file}">
+          <div class="name">${icon} ${escHtml(r.source)}</div>
+          <div class="badges">
+            ${badges}
+            <span class="badge badge-indexed" id="indexed-badge-${r.file}"
+              style="display:${isIdx ? 'inline-block' : 'none'}">⬆ indexed</span>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function loadResult(filename) {
+    highlightFileItem(filename);
+    currentFile = filename;
+    const res  = await fetch(`/results/${filename}`);
+    const data = await res.json();
+    currentData = data;
+    renderResult(data, filename);
+  }
+
+  function highlightFileItem(filename) {
+    document.querySelectorAll('.file-item').forEach(el => el.classList.remove('active'));
+    const item = document.getElementById(`item-${filename}`);
+    if (item) item.classList.add('active');
+  }
+
+  // ── Qdrant status ──────────────────────────────────────────────────────────
+  async function checkQdrantStatus() {
+    try {
+      const res  = await fetch('/qdrant-status');
+      const data = await res.json();
+      qdrantOnline = data.enabled === true;
+    } catch (_) {
+      qdrantOnline = false;
+    }
+    const dot   = document.getElementById('qdrantDot');
+    const label = document.getElementById('qdrantLabel');
+    if (qdrantOnline) {
+      dot.className   = 'status-dot online';
+      label.textContent = 'Qdrant online';
+    } else {
+      dot.className   = 'status-dot offline';
+      label.textContent = 'Qdrant offline';
+    }
+  }
+
+  // ── JSON modal ─────────────────────────────────────────────────────────────
+  function showJson() {
+    document.getElementById('jsonView').textContent = JSON.stringify(currentData, null, 2);
+    document.getElementById('jsonModal').classList.add('open');
+  }
+  function closeModal() {
+    document.getElementById('jsonModal').classList.remove('open');
+  }
+  document.getElementById('jsonModal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  async function copyJson() {
+    if (!currentData) return;
+    const text = JSON.stringify(currentData, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('✅ JSON copied to clipboard');
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast('✅ JSON copied to clipboard');
+    }
+  }
+
+  function downloadJson() {
+    if (!currentData) return;
+    const stem = (currentData.source_file || 'output').replace(/\.[^.]+$/, '');
+    const name = stem + '_chunks.json';
+    const blob = new Blob([JSON.stringify(currentData, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('✅ Downloading ' + name);
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function setLoading(on, msg = '') {
+    uploadBtn.disabled = on;
+    const wrap = document.getElementById('progressWrap');
+    wrap.style.display = on ? 'block' : 'none';
+    document.getElementById('progressMsg').textContent = msg;
+  }
+
+  function escHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  let toastTimer;
+  function toast(msg, err = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.borderColor = err ? '#7f1d1d' : '#2d3148';
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  // If a session was active before a page refresh, restore its display
+  if (memorySessionId) updateSessionDisplay();
+
+  checkQdrantStatus();
+  loadFileList();
+  // Poll Qdrant status every 15 seconds so the dot updates without a page refresh
+  setInterval(checkQdrantStatus, 15000);
+
+  // ── Google Crawlers ────────────────────────────────────────────────────────
+
+  let crawlerExpanded  = false;
+  let activeCrawlJob   = null;
+  let crawlPollTimer   = null;
+  let currentCrawlTab  = 'gmail';
+
+  function toggleCrawlerExpanded() {
+    crawlerExpanded = !crawlerExpanded;
+    document.getElementById('crawlerBody').style.display = crawlerExpanded ? 'block' : 'none';
+    document.getElementById('crawlerToggleLabel').textContent = crawlerExpanded ? 'Hide' : 'Show';
+    document.getElementById('crawlerToggleArrow').textContent = crawlerExpanded ? '▲' : '▼';
+    if (crawlerExpanded) loadCrawlHistory();
+  }
+
+  function setCrawlerTab(tab) {
+    currentCrawlTab = tab;
+    const isGmail = tab === 'gmail';
+    document.getElementById('crawlerGmail').style.display = isGmail ? 'block' : 'none';
+    document.getElementById('crawlerDrive').style.display = isGmail ? 'none' : 'block';
+
+    const activeStyle  = 'background:#5b6af0;color:white;';
+    const inactiveStyle = 'background:transparent;color:#94a3b8;';
+    document.getElementById('tabGmail').style.cssText += isGmail  ? activeStyle : inactiveStyle;
+    document.getElementById('tabDrive').style.cssText += !isGmail ? activeStyle : inactiveStyle;
+  }
+
+  function updateDriveToggle(checkbox) {
+    document.getElementById('driveToggleTrack').style.background  = checkbox.checked ? '#5b6af0' : 'rgba(255,255,255,0.12)';
+    document.getElementById('driveToggleThumb').style.transform   = checkbox.checked ? 'translateX(16px)' : 'translateX(0)';
+  }
+
+  async function startCrawl(source) {
+    if (activeCrawlJob) { alert('A crawl is already running. Wait for it to finish.'); return; }
+
+    let body;
+    if (source === 'gmail') {
+      body = {
+        label:       document.getElementById('cGmailLabel').value.trim()  || null,
+        query:       document.getElementById('cGmailQuery').value.trim()  || null,
+        after:       document.getElementById('cGmailAfter').value         || null,
+        before:      document.getElementById('cGmailBefore').value        || null,
+        max_results: parseInt(document.getElementById('cGmailMax').value) || 100,
+      };
+    } else {
+      const typesRaw = document.getElementById('cDriveTypes').value.trim();
+      body = {
+        folder_id:      document.getElementById('cDriveFolderId').value.trim() || null,
+        recursive:      document.getElementById('cDriveRecursive').checked,
+        modified_after: document.getElementById('cDriveAfter').value           || null,
+        types:          typesRaw ? typesRaw.split(',').map(t => t.trim()).filter(Boolean) : null,
+        max_results:    parseInt(document.getElementById('cDriveMax').value)   || 200,
+      };
+    }
+
+    const btn = document.getElementById(source === 'gmail' ? 'cGmailBtn' : 'cDriveBtn');
+    btn.disabled   = true;
+    btn.textContent = '⏳ Starting…';
+
+    try {
+      const r = await fetch(`/crawl/${source}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        alert(`Failed to start crawl: ${err.detail ?? r.statusText}`);
+        btn.disabled = false;
+        btn.textContent = `▶ Start ${source === 'gmail' ? 'Gmail' : 'Drive'} Crawl`;
+        return;
+      }
+      const data = await r.json();
+      activeCrawlJob = { job_id: data.job_id, source };
+      btn.textContent = '⏳ Crawl running…';
+      showCrawlerProgress(true);
+      crawlPollTimer = setInterval(() => pollCrawlJob(data.job_id), 2000);
+    } catch (e) {
+      alert(`Network error: ${e}`);
+      btn.disabled = false;
+      btn.textContent = `▶ Start ${source === 'gmail' ? 'Gmail' : 'Drive'} Crawl`;
+    }
+  }
+
+  function showCrawlerProgress(show) {
+    document.getElementById('crawlerProgress').style.display = show ? 'block' : 'none';
+  }
+
+  function updateCrawlerProgressUI(job) {
+    const total = job.total || 0;
+    const done  = (job.indexed || 0) + (job.errors || 0);
+    const pct   = total > 0 ? Math.round(done / total * 100) : 0;
+
+    document.getElementById('crawlerIndexed').textContent = job.indexed || 0;
+    document.getElementById('crawlerSkipped').textContent = job.skipped || 0;
+    document.getElementById('crawlerErrors').textContent  = job.errors  || 0;
+    document.getElementById('crawlerBar').style.width     = `${pct}%`;
+    document.getElementById('crawlerPct').textContent     = total > 0 ? `${pct}%` : '';
+    document.getElementById('crawlerCurrent').textContent = job.current ? `Processing: ${job.current}` : '';
+
+    const isDone   = job.status === 'done';
+    const isFailed = job.status === 'failed';
+
+    if (isDone || isFailed) {
+      const label = isDone
+        ? `✓ Done — ${job.indexed} indexed`
+        : `✗ Failed${job.error ? ': ' + job.error : ''}`;
+      document.getElementById('crawlerStatusLabel').textContent = label;
+      document.getElementById('crawlerSpinner').style.display   = 'none';
+      document.getElementById('crawlerBar').style.background    = isDone ? '#4ade80' : '#f87171';
+    } else {
+      document.getElementById('crawlerStatusLabel').textContent = `${job.source === 'gmail' ? 'Gmail' : 'Drive'} crawl running…`;
+      document.getElementById('crawlerSpinner').style.display   = 'block';
+      document.getElementById('crawlerBar').style.background    = '#5b6af0';
+    }
+  }
+
+  async function pollCrawlJob(jobId) {
+    try {
+      const r = await fetch(`/crawl/status/${jobId}`);
+      if (r.status === 404) {
+        // Job finished and moved to history
+        clearInterval(crawlPollTimer);
+        crawlPollTimer = null;
+        const source = activeCrawlJob?.source;
+        activeCrawlJob = null;
+        resetCrawlButton(source);
+        updateCrawlerProgressUI({ status: 'done', indexed: '?', skipped: 0, errors: 0 });
+        loadCrawlHistory();
+        return;
+      }
+      if (!r.ok) return;
+      const job = await r.json();
+      updateCrawlerProgressUI(job);
+      if (job.status !== 'running') {
+        clearInterval(crawlPollTimer);
+        crawlPollTimer = null;
+        const source = activeCrawlJob?.source;
+        activeCrawlJob = null;
+        resetCrawlButton(source);
+        loadCrawlHistory();
+      }
+    } catch { /* ignore transient errors */ }
+  }
+
+  function resetCrawlButton(source) {
+    if (!source) return;
+    const btn = document.getElementById(source === 'gmail' ? 'cGmailBtn' : 'cDriveBtn');
+    if (btn) {
+      btn.disabled    = false;
+      btn.textContent = `▶ Start ${source === 'gmail' ? 'Gmail' : 'Drive'} Crawl`;
+    }
+  }
+
+  async function loadCrawlHistory() {
+    const el = document.getElementById('crawlerHistory');
+    el.textContent = 'Loading…';
+    try {
+      const r = await fetch(`/crawl/history?limit=10`);
+      if (!r.ok) { el.textContent = 'Could not load history.'; return; }
+      const data = await r.json();
+      if (!data.runs || data.runs.length === 0) {
+        el.textContent = 'No runs yet';
+        return;
+      }
+      el.innerHTML = data.runs.map(run => {
+        const icon    = run.source === 'gmail' ? '✉' : '💾';
+        const label   = run.source === 'gmail' ? 'Gmail' : 'Drive';
+        const status  = run.status === 'done'   ? '✓'
+                      : run.status === 'failed' ? '✗' : '⏳';
+        const color   = run.status === 'done'   ? '#4ade80'
+                      : run.status === 'failed' ? '#f87171' : '#94a3b8';
+        const date    = run.finished_at
+          ? new Date(run.finished_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+          : new Date(run.started_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+        return `
+          <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.03);border:1px solid #2d3148;border-radius:7px;margin-bottom:4px;">
+            <span>${icon}</span>
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span style="font-size:12px;font-weight:500;color:#e2e8f0;">${label}</span>
+                <span style="color:${color};font-size:11px;">${status}</span>
+              </div>
+              <p style="font-size:10px;color:#475569;margin:0;">${run.indexed} indexed · ${run.errors} errors · ${date}</p>
+              ${run.error ? `<p style="font-size:10px;color:#f87171;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${run.error}</p>` : ''}
+            </div>
+            <div style="text-align:right;flex-shrink:0;">
+              <p style="font-size:13px;font-weight:600;color:#e2e8f0;margin:0;">${run.total}</p>
+              <p style="font-size:9px;color:#475569;margin:0;">total</p>
+            </div>
+          </div>`;
+      }).join('');
+    } catch (e) {
+      el.textContent = `Error: ${e}`;
+    }
+  }
+
+</script>
+</body>
+</html>

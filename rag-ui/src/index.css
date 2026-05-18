@@ -1,0 +1,178 @@
+@import '@fontsource/dm-sans';
+@import '@fontsource/dm-mono';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens (light/default — sidebar is always dark) ─────────────────── */
+:root {
+  /* Structural backgrounds */
+  --bg-base:        #111318;
+  --bg-sidebar:     #111318;
+  --bg-chat:        #ffffff;
+  --bg-user-bubble: #6366f1;
+  --bg-ai-bubble:   #f6f7f9;
+
+  /* Accent */
+  --accent:         #6366f1;
+  --accent-hover:   #4f51d4;
+  --accent-rgb:     99, 102, 241;
+
+  /* Text */
+  --text-primary:   #111318;
+  --text-muted:     #6b7280;
+  --text-on-dark:   #e4e6f0;
+  --text-sidebar-muted: rgba(160, 163, 185, 0.75);
+
+  /* Borders */
+  --border:         #e5e7eb;
+  --border-dark:    rgba(255, 255, 255, 0.07);
+
+  /* Status */
+  --success:        #22c55e;
+  --warning:        #f59e0b;
+  --danger:         #ef4444;
+
+  /* Metadata badge tokens */
+  --badge-bg:       #f0f1f3;
+  --badge-warn-bg:  rgba(239,68,68,0.09);
+
+  /* Eval panel */
+  --eval-bg:        #f9fafb;
+  --eval-hover:     rgba(0,0,0,0.04);
+
+  /* Verdict badge tokens */
+  --verdict-pass-bg:    #f0fdf4;
+  --verdict-pass-fg:    #15803d;
+  --verdict-fail-bg:    #fef2f2;
+  --verdict-fail-fg:    #b91c1c;
+  --verdict-warn-bg:    #fffbeb;
+  --verdict-warn-fg:    #b45309;
+  --verdict-info-bg:    #fff7ed;
+  --verdict-info-fg:    #c2410c;
+
+  /* Prose code */
+  --prose-code-bg:   rgba(99,102,241,0.08);
+  --prose-code-fg:   #4f51d4;
+  --prose-pre-bg:    #1a1c27;
+  --prose-pre-fg:    #e4e6f0;
+  --prose-th-bg:     #f4f5f7;
+
+  /* Sidebar dimensions */
+  --sidebar-width: 256px;
+}
+
+/* ── Dark theme (chat area only) ─────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg-chat:        #0c0e16;
+  --bg-ai-bubble:   #181a26;
+  --text-primary:   #e2e4ef;
+  --text-muted:     #8b90a8;
+  --border:         #252836;
+
+  --badge-bg:       rgba(255,255,255,0.06);
+  --badge-warn-bg:  rgba(239,68,68,0.14);
+
+  --eval-bg:        #181a26;
+  --eval-hover:     rgba(255,255,255,0.04);
+
+  --verdict-pass-bg:    rgba(34,197,94,0.12);
+  --verdict-pass-fg:    #4ade80;
+  --verdict-fail-bg:    rgba(239,68,68,0.13);
+  --verdict-fail-fg:    #f87171;
+  --verdict-warn-bg:    rgba(245,158,11,0.13);
+  --verdict-warn-fg:    #fbbf24;
+  --verdict-info-bg:    rgba(249,115,22,0.13);
+  --verdict-info-fg:    #fb923c;
+
+  --prose-code-bg:  rgba(99,102,241,0.14);
+  --prose-code-fg:  #9295f8;
+  --prose-th-bg:    #1e2030;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────────── */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  font-family: 'DM Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: rgba(255,255,255,0.1); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+/* ── ReactMarkdown prose ───────────────────────────────────────────────────────── */
+.prose { color: var(--text-primary); font-size: 0.9rem; line-height: 1.75; }
+.prose p  { margin: 0 0 0.65em; }
+.prose p:last-child { margin-bottom: 0; }
+.prose ul, .prose ol { padding-left: 1.3em; margin: 0.4em 0 0.65em; }
+.prose li { margin: 0.25em 0; }
+.prose code {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.81em;
+  background: var(--prose-code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  color: var(--prose-code-fg);
+}
+.prose pre {
+  background: var(--prose-pre-bg);
+  border-radius: 10px;
+  padding: 1em 1.1em;
+  overflow-x: auto;
+  margin: 0.65em 0;
+}
+.prose pre code {
+  background: transparent;
+  color: var(--prose-pre-fg);
+  font-size: 0.84em;
+  padding: 0;
+}
+.prose table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin: 0.65em 0; }
+.prose th, .prose td { border: 1px solid var(--border); padding: 0.45em 0.75em; text-align: left; }
+.prose th { background: var(--prose-th-bg); font-weight: 600; }
+.prose strong { font-weight: 600; }
+.prose a { color: var(--accent); text-decoration: underline; }
+.prose h1,.prose h2,.prose h3,.prose h4 { font-weight: 650; margin: 0.9em 0 0.35em; line-height: 1.3; }
+.prose h1 { font-size: 1.2em; }
+.prose h2 { font-size: 1.1em; }
+.prose h3 { font-size: 1em; }
+
+/* ── Animations ───────────────────────────────────────────────────────────────── */
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1.0); opacity: 1; }
+}
+
+@keyframes bar-grow {
+  from { width: 0%; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.22s ease forwards;
+}
+
+/* ── Focus ring ───────────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.5);
+  outline-offset: 2px;
+}

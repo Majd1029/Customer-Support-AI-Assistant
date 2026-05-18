@@ -1,0 +1,95 @@
+# ── Parsing ───────────────────────────────────────────────────────────────────
+markitdown[docx,pptx]>=0.1.0
+pypdf==5.1.0
+pdfplumber==0.11.4
+openpyxl==3.1.5
+Pillow>=12.1.0
+chardet==5.2.0
+msoffcrypto-tool==5.4.2
+python-docx>=1.1.0
+
+# ── OCR (Ollama / Gemma 4 — local, no cloud key needed) ──────────────────────
+ollama==0.4.4
+
+# ── PDF rasterisation (for scanned-PDF OCR) ───────────────────────────────────
+pdf2image==1.16.0
+
+# ── Image captioning (Groq / Llama 4 Scout) ───────────────────────────────────
+groq==1.1.2
+PyJWT>=2.8.0
+
+# ── API server ────────────────────────────────────────────────────────────────
+fastapi==0.105.0
+uvicorn==0.34.0
+
+# ── Token counting ────────────────────────────────────────────────────────────
+tiktoken==0.12.0
+
+# ── Language detection ────────────────────────────────────────────────────────
+langdetect>=1.0.9
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+loguru==0.7.3
+rich==13.9.4
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+numpy>=1.26.0
+
+# ── CSV / database ────────────────────────────────────────────────────────────
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0
+pandas>=2.2.0
+restrictedpython>=7.0
+
+# ── Embedding — BGE-M3 ────────────────────────────────────────────────────────
+FlagEmbedding>=1.2.9
+huggingface_hub>=0.22.0
+SentencePiece>=0.2.0
+
+# ── Vector store ──────────────────────────────────────────────────────────────
+qdrant-client>=1.9.0
+
+# ── BM25 sparse encoding ──────────────────────────────────────────────────────
+bm25s>=0.1.10
+rank-bm25>=0.2.2
+
+# ── Reranking (Jina cross-encoder) ────────────────────────────────────────────
+# Pin transformers <5 to avoid sentence-transformers conflict (see CLAUDE.md §Known Limitations)
+sentence-transformers>=3.0.0
+transformers>=4.40.0,<5.0.0
+
+# ── Protobuf (must be >=4 for qdrant-client 1.9+) ────────────────────────────
+protobuf<=3.20.2
+
+# ── Evaluation graph ──────────────────────────────────────────────────────────
+langgraph>=0.2.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+httpx>=0.27.0
+tenacity>=9.0.0
+
+
+# ── Editable install & testing ────────────────────────────────────────────────
+# Run once after cloning: pip install -e .  (installs the project as an editable
+# package so `from file_preparation.X import Y` works from any directory)
+setuptools>=68
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+python-multipart>=0.0.28
+
+# ── Redis (optional — enables multi-worker conversation buffer) ───────────────
+# Set REDIS_URL=redis://localhost:6379/0 in .env to activate.
+# Without REDIS_URL the buffer falls back to the in-process dict store.
+redis>=5.0.0
+
+
+together
+openai
+PyJWT>=2.12.1
+
+# ── Google API crawlers (crawlers/gmail_crawler.py + crawlers/drive_crawler.py) ─
+# Install separately or run:  pip install -r crawlers/requirements.txt
+google-auth>=2.28.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.120.0

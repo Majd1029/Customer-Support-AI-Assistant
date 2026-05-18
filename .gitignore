@@ -1,0 +1,211 @@
+# =============================================================================
+#  .gitignore — Customer Support AI Assistant
+# =============================================================================
+
+# ── Python bytecode & compiled extensions ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# ── Editable-install artefacts ─────────────────────────────────────────────────
+*.pth
+*.dist-info/
+site-packages/
+__editable__*
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SECRETS — never commit any of these
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example          # keep the example template
+*.env.local
+*.env.production
+*.env.staging
+
+# Google OAuth credentials & tokens
+credentials.json
+client_secret*.json
+crawlers/token.json
+token.json
+service_account*.json
+*_service_account.json
+*.p12
+*.pfx
+
+# API keys / private keys / certs
+*.key
+*.pem
+*.crt
+*.cer
+*.p8
+secret*.txt
+secret*.json
+secrets/
+
+# ── IDE & editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LOCAL-ONLY DOCS (not intended for public repo)
+# ─────────────────────────────────────────────────────────────────────────────
+CLAUDE.md
+todo.txt
+infos.txt
+notes.txt
+memory_layer_design.md
+internship_report_draft.docx
+*.docx
+Plan-PFE*.pdf
+Plan-PFE*.docx
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RUNTIME OUTPUTS — generated at run time, not source
+# ─────────────────────────────────────────────────────────────────────────────
+# Upload / extraction artefacts
+file_processor/uploads/
+file_processor/results/
+file_processor/extracted_images/
+file_processor/images/
+file_processor/documents_for_test/
+
+# Crawl state (rebuilt automatically on restart)
+file_processor/crawl_history.json
+
+# Evaluation logs
+file_preparation/evaluation/eval_log*.csv
+eval_log*.csv
+
+# ── ML model weights (large binary downloads — use HF Hub / Ollama instead) ──
+*.bin
+*.pt
+*.pth
+*.gguf
+*.safetensors
+*.ckpt
+*.h5
+*.pkl
+*.pickle
+jina_model/
+bge_model/
+models/
+weights/
+
+# ── Qdrant (managed by Docker volume) ────────────────────────────────────────
+qdrant_storage/
+qdrant_data/
+
+# ── Redis dump ───────────────────────────────────────────────────────────────
+dump.rdb
+
+# ── PostgreSQL data dir ───────────────────────────────────────────────────────
+pgdata/
+
+# ── BM25 index state (regenerated at index time) ─────────────────────────────
+file_preparation/indexing/bm25_config.json
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NODE / REACT (rag-ui/)
+# ─────────────────────────────────────────────────────────────────────────────
+rag-ui/node_modules/
+rag-ui/dist/
+rag-ui/.env
+rag-ui/.env.local
+rag-ui/.env.production
+!rag-ui/.env.example    # keep the example
+rag-ui/.vite/
+rag-ui/coverage/
+
+# Generic node_modules anywhere in the tree
+node_modules/
+
+# ── Vite / build caches ───────────────────────────────────────────────────────
+.vite/
+.turbo/
+.next/
+.nuxt/
+.cache/
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TEST & COVERAGE ARTEFACTS
+# ─────────────────────────────────────────────────────────────────────────────
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+nosetests.xml
+test-results/
+
+# ── Temporary / scratch files ────────────────────────────────────────────────
+temp/
+tmp/
+scratch/
+*.tmp
+*.bak
+*.orig
+*.DS_Store
+
+# ── Typical test fixture files (binary, regenerated per test run) ─────────────
+test_*.pdf
+test_*.docx
+test_*.xlsx
+test_*.pptx
+test_*.png
+test_*.jpg
+test_*.jpeg
+test_*.eml
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  JUPYTER
+# ─────────────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LATEX REPORT (generated output — keep sources, ignore compiled artefacts)
+# ─────────────────────────────────────────────────────────────────────────────
+latex_report/

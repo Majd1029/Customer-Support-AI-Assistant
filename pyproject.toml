@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "customer-support-ai-assistant"
+version = "0.1.0"
+description = "Document extraction and RAG preparation pipeline"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "file_processor*",
+    "file_preparation*",
+    "csv_query_engine*",
+]
+exclude = ["venv*", "*.egg-info*", "tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.html", "*.md", "*.json", "*.yaml"]
+
+# ── Development tools ──────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501", "F401"]  # long lines OK; unused imports kept for re-exports
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = false
