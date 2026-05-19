@@ -139,7 +139,7 @@ export default function App() {
             </svg>
           </button>
           <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>
-            DocAssist
+            Customer Support AI Assistant
           </span>
           {/* User initial on mobile */}
           <div
