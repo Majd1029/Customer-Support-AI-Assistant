@@ -58,7 +58,7 @@ def _display(result: ExtractionResult) -> None:
                 for col in rows[0]:
                     tbl.add_column(col, max_width=20)
                 for row in rows[1:]:
-                    tbl.add_row(*[str(c) for c in row])
+                    tbl.add_row(*row)
                 console.print(tbl)
 
     if result.images:

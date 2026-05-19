@@ -40,7 +40,7 @@ export function useAuth() {
     } catch { return null; }
   });
 
-  // Verify the stored JWT is still valid on mount.
+  // Verify the stored JWT is still valid on mount and refresh role from server.
   // If the server returns 401 (expired / revoked), clear the session.
   // Network errors are ignored — don't log out if the server is down.
   useEffect(() => {
@@ -48,10 +48,18 @@ export function useAuth() {
     fetch(`${API_URL}/auth/me`, {
       headers: { Authorization: `Bearer ${user.token}` },
     })
-      .then(r => {
+      .then(async r => {
         if (r.status === 401) {
           localStorage.removeItem(SESSION_KEY);
           setUser(null);
+          return;
+        }
+        if (r.ok) {
+          // Refresh role from server so admin promotions take effect on reload.
+          const data = await r.json() as { role?: 'user' | 'admin' };
+          if (data.role && data.role !== user.role) {
+            _persist({ ...user, role: data.role });
+          }
         }
       })
       .catch(() => { /* server unreachable — keep session */ });
@@ -73,8 +81,8 @@ export function useAuth() {
         body:    JSON.stringify({ username_or_email: username, password }),
       });
       if (res.ok) {
-        const data = await res.json() as { user_id: string; username: string; email: string; token: string };
-        _persist({ id: data.user_id, username: data.username, email: data.email, token: data.token });
+        const data = await res.json() as { user_id: string; username: string; email: string; token: string; role?: 'user' | 'admin' };
+        _persist({ id: data.user_id, username: data.username, email: data.email, token: data.token, role: data.role ?? 'user' });
         return null;
       }
       if (res.status === 401 || res.status === 400) {
@@ -113,8 +121,8 @@ export function useAuth() {
         body:    JSON.stringify({ username: trimmed, password, email }),
       });
       if (res.ok) {
-        const data = await res.json() as { user_id: string; username: string; email: string; token: string };
-        _persist({ id: data.user_id, username: data.username, email: data.email, token: data.token });
+        const data = await res.json() as { user_id: string; username: string; email: string; token: string; role?: 'user' | 'admin' };
+        _persist({ id: data.user_id, username: data.username, email: data.email, token: data.token, role: data.role ?? 'user' });
         return null;
       }
       const err = await res.json().catch(() => ({ detail: 'Registration failed' })) as { detail?: string };
@@ -147,7 +155,7 @@ export function useAuth() {
 
     const handler = (e: MessageEvent) => {
       if (e.origin !== new URL(API_URL).origin && e.origin !== window.location.origin) return;
-      const msg = e.data as { type?: string; user?: { user_id: string; username: string; email: string; token: string }; error?: string };
+      const msg = e.data as { type?: string; user?: { user_id: string; username: string; email: string; token: string; role?: 'user' | 'admin' }; error?: string };
       if (msg?.type !== 'google_auth') return;
       window.removeEventListener('message', handler);
       if (msg.error) {
@@ -155,7 +163,7 @@ export function useAuth() {
         return;
       }
       if (msg.user) {
-        _persist({ id: msg.user.user_id, username: msg.user.username, email: msg.user.email, token: msg.user.token });
+        _persist({ id: msg.user.user_id, username: msg.user.username, email: msg.user.email, token: msg.user.token, role: msg.user.role ?? 'user' });
       }
     };
     window.addEventListener('message', handler);
@@ -170,9 +178,9 @@ export function useAuth() {
           const stored = sessionStorage.getItem('google_auth_result');
           if (stored) {
             sessionStorage.removeItem('google_auth_result');
-            const parsed = JSON.parse(stored) as { type?: string; user?: { user_id: string; username: string; email: string; token: string } };
+            const parsed = JSON.parse(stored) as { type?: string; user?: { user_id: string; username: string; email: string; token: string; role?: 'user' | 'admin' } };
             if (parsed?.user) {
-              _persist({ id: parsed.user.user_id, username: parsed.user.username, email: parsed.user.email, token: parsed.user.token });
+              _persist({ id: parsed.user.user_id, username: parsed.user.username, email: parsed.user.email, token: parsed.user.token, role: parsed.user.role ?? 'user' });
             }
           }
         }
@@ -188,9 +196,9 @@ export function useAuth() {
       if (stored) {
         sessionStorage.removeItem('google_auth_result');
         try {
-          const parsed = JSON.parse(stored) as { user?: { user_id: string; username: string; email: string; token: string } };
+          const parsed = JSON.parse(stored) as { user?: { user_id: string; username: string; email: string; token: string; role?: 'user' | 'admin' } };
           if (parsed?.user) {
-            _persist({ id: parsed.user.user_id, username: parsed.user.username, email: parsed.user.email, token: parsed.user.token });
+            _persist({ id: parsed.user.user_id, username: parsed.user.username, email: parsed.user.email, token: parsed.user.token, role: parsed.user.role ?? 'user' });
           }
         } catch { /* ignore */ }
       }

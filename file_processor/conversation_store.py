@@ -193,12 +193,14 @@ def list_sessions(user_id: str) -> list[dict]:
             [
                 {
                     "id": s["session_id"], "label": s["label"],
-                    "createdAt": 0, "lastActive": 0,
+                    "createdAt": int(datetime.fromisoformat(s.get("created_at", "1970-01-01T00:00:00+00:00")).timestamp() * 1000),
+                    "lastActive": int(datetime.fromisoformat(s.get("last_active", "1970-01-01T00:00:00+00:00")).timestamp() * 1000),
                     "shareToken": s.get("share_token"),
                 }
                 for s in _SESSIONS.values()
                 if s["user_id"] == user_id
             ],
+            key=lambda x: x["lastActive"],
             reverse=True,
         )
 

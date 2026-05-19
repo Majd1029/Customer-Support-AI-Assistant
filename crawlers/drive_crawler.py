@@ -54,12 +54,18 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from crawlers.auth import get_drive_service  # noqa: E402
 
-# ── Drive permission store (optional — degrades gracefully if PG is down) ─────
+# ── Drive permission + crawl-state store (optional — degrades gracefully) ─────
 try:
     from file_processor.drive_store import upsert_file as _drive_upsert_file
+    from file_processor.drive_store import (
+        get_crawl_state    as _get_crawl_state,
+        update_crawl_state as _update_crawl_state,
+    )
     _DRIVE_STORE_OK = True
 except Exception:
-    _drive_upsert_file = None  # type: ignore
+    _drive_upsert_file   = None   # type: ignore
+    _get_crawl_state     = None   # type: ignore
+    _update_crawl_state  = None   # type: ignore
     _DRIVE_STORE_OK = False
 
 # ── MIME type mapping ──────────────────────────────────────────────────────────
@@ -150,6 +156,9 @@ def _build_mime_filter(ext_filter: list[str] | None) -> set[str]:
     return mimes
 
 
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
 def _list_files(
     service,
     folder_id:      str | None,
@@ -159,66 +168,130 @@ def _list_files(
     max_results:    int,
 ) -> list[dict]:
     """
-    List Drive files matching the given criteria.
+    List Drive files matching the given criteria using BFS traversal.
 
-    Returns list of file metadata dicts with: id, name, mimeType, size.
+    Root cause of previous "Found 0 files" bug: the MIME type filter excluded
+    application/vnd.google-apps.folder, so sub-folders were never returned
+    by the file-listing query and the recursion queue was always empty.
+
+    Fix: use two separate queries per folder —
+      1. Files query  — filtered by allowed_mimes (never includes folders)
+      2. Folders query — filtered by folder MIME, only when recursive=True
+
+    BFS ensures full-depth traversal without Python stack overflow on deep trees.
+
+    Returns list of file metadata dicts: id, name, mimeType, size, parents.
     """
-    files: list[dict] = []
+    files:           list[dict]      = []
+    seen_file_ids:   set[str]        = set()   # prevent duplicates across shared files
+    visited_folders: set[str | None] = set()   # prevent re-entering folders
 
-    def _query_folder(fid: str | None) -> None:
-        nonlocal files
-        if len(files) >= max_results:
-            return
+    # BFS queue — None represents "My Drive root" (no parent filter)
+    queue: list[str | None] = [folder_id]
+    visited_folders.add(folder_id)
 
-        # Build query
-        q_parts = ["trashed = false"]
-        if fid:
-            q_parts.append(f"'{fid}' in parents")
+    while queue and len(files) < max_results:
+        current_fid = queue.pop(0)
+
+        folder_label = current_fid or "root"
+        logger.debug(f"[Drive] Traversing folder: {folder_label}")
+
+        # ── 1. Query files in this folder ─────────────────────────────────────
+        file_q_parts = ["trashed = false"]
+        if current_fid is not None:
+            file_q_parts.append(f"'{current_fid}' in parents")
         if allowed_mimes:
             mime_clauses = " or ".join(
                 f"mimeType = '{m}'" for m in sorted(allowed_mimes)
             )
-            q_parts.append(f"({mime_clauses})")
+            file_q_parts.append(f"({mime_clauses})")
         if modified_after:
-            q_parts.append(f"modifiedTime > '{modified_after}T00:00:00'")
+            file_q_parts.append(f"modifiedTime > '{modified_after}T00:00:00'")
 
-        q = " and ".join(q_parts)
-        page_token = None
+        file_q = " and ".join(file_q_parts)
+        page_token: str | None = None
 
         while len(files) < max_results:
             kwargs: dict = {
-                "q":        q,
-                "fields":   "nextPageToken, files(id, name, mimeType, size, parents)",
+                "q":        file_q,
+                "fields":   "nextPageToken, files(id, name, mimeType, size, parents, modifiedTime)",
                 "pageSize": min(PAGE_SIZE, max_results - len(files)),
             }
             if page_token:
                 kwargs["pageToken"] = page_token
 
-            resp = service.files().list(**kwargs).execute()
-            batch = resp.get("files", [])
+            try:
+                resp = service.files().list(**kwargs).execute()
+            except Exception as exc:
+                logger.warning(
+                    f"[Drive] Error listing files in folder {folder_label}: {exc}"
+                )
+                break
 
-            # Separate folders from files
-            sub_folders = []
-            for f in batch:
-                if f["mimeType"] == "application/vnd.google-apps.folder":
-                    sub_folders.append(f)
-                else:
+            for f in resp.get("files", []):
+                fid = f["id"]
+                if fid not in seen_file_ids:
+                    seen_file_ids.add(fid)
                     files.append(f)
+                    logger.debug(
+                        f"[Drive]   Found file: {f['name']} "
+                        f"({f.get('size', '?')} bytes, {f['mimeType']})"
+                    )
                     if len(files) >= max_results:
-                        return
+                        break
 
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
 
-            # Recurse into sub-folders if requested
-            if recursive:
-                for sf in sub_folders:
-                    if len(files) >= max_results:
-                        return
-                    _query_folder(sf["id"])
+        # ── 2. Query sub-folders and enqueue for BFS ──────────────────────────
+        if not recursive:
+            continue
 
-    _query_folder(folder_id)
+        folder_q_parts = [
+            "trashed = false",
+            f"mimeType = '{_FOLDER_MIME}'",
+        ]
+        if current_fid is not None:
+            folder_q_parts.append(f"'{current_fid}' in parents")
+
+        folder_q = " and ".join(folder_q_parts)
+        folder_page_token: str | None = None
+
+        while True:
+            folder_kwargs: dict = {
+                "q":        folder_q,
+                "fields":   "nextPageToken, files(id, name, mimeType)",
+                "pageSize": PAGE_SIZE,
+            }
+            if folder_page_token:
+                folder_kwargs["pageToken"] = folder_page_token
+
+            try:
+                folder_resp = service.files().list(**folder_kwargs).execute()
+            except Exception as exc:
+                logger.warning(
+                    f"[Drive] Error listing sub-folders of {folder_label}: {exc}"
+                )
+                break
+
+            for sf in folder_resp.get("files", []):
+                sf_id = sf["id"]
+                if sf_id not in visited_folders:
+                    visited_folders.add(sf_id)
+                    queue.append(sf_id)
+                    logger.debug(
+                        f"[Drive]   Discovered sub-folder: {sf['name']} ({sf_id})"
+                    )
+
+            folder_page_token = folder_resp.get("nextPageToken")
+            if not folder_page_token:
+                break
+
+    logger.info(
+        f"[Drive] BFS complete — visited {len(visited_folders)} folder(s), "
+        f"found {len(files)} file(s)"
+    )
     return files[:max_results]
 
 
@@ -299,6 +372,21 @@ def _resolve_permissions(
     return is_public, allowed_users
 
 
+def _expected_indexed_name(meta: dict) -> str:
+    """
+    Return the filename that will be written to Qdrant's ``source`` field for
+    this file.  Google Workspace files get an Office extension on export
+    (e.g. "Quarterly Report.gdoc" → "Quarterly Report.docx"); all other files
+    keep their current Drive name.
+    """
+    mime = meta.get("mimeType", "")
+    name = meta.get("name", "")
+    if mime in _GOOGLE_EXPORT:
+        _, ext = _GOOGLE_EXPORT[mime]
+        return Path(name).stem + ext
+    return name
+
+
 def iter_files(
     service,
     folder_id:      str | None,
@@ -306,23 +394,76 @@ def iter_files(
     modified_after: str | None,
     recursive:      bool,
     max_results:    int,
+    incremental:    bool = True,
 ) -> Iterator[tuple[str, bytes, dict]]:
     """
-    Yield (filename, content_bytes, file_meta) for each Drive file matching
-    the criteria.  ``file_meta`` is the raw dict from the Drive API list call
-    (keys: id, name, mimeType, size, parents) — used by the caller to resolve
-    permissions and tag chunks.  Skips files that cannot be downloaded or have
-    unsupported formats.
+    Yield (filename, content_bytes, file_meta) for each Drive file that should
+    be indexed.
+
+    When ``incremental=True`` (default), files whose Drive ``modifiedTime``
+    matches the value stored from the previous crawl are silently skipped —
+    they are already up-to-date in Qdrant.
+
+    ``file_meta`` is the Drive API metadata dict enriched with three extra keys
+    that the caller uses after a successful upload:
+
+      _action          — "new" | "modified" | "renamed" | "full"
+      _old_indexed_name — the Qdrant source name from the previous crawl, set
+                         only for "renamed" files so the caller can delete the
+                         stale entries before re-indexing.
+      _modified_time   — Drive modifiedTime string to persist to crawl state.
     """
     file_list = _list_files(
         service, folder_id, allowed_mimes, modified_after, recursive, max_results
     )
     total = len(file_list)
-    logger.info(f"[Drive] Found {total} files to process")
+    logger.info(f"[Drive] Found {total} file(s) to evaluate")
 
+    skipped = 0
     for i, meta in enumerate(file_list, 1):
-        name = meta["name"]
-        size = meta.get("size", "?")
+        name           = meta.get("name", "")
+        size           = meta.get("size", "?")
+        file_id        = meta.get("id", "")
+        modified_time  = meta.get("modifiedTime", "")
+        indexed_name   = _expected_indexed_name(meta)
+
+        # ── Incremental check: skip files that haven't changed ────────────────
+        if incremental and _get_crawl_state is not None and file_id:
+            state = _get_crawl_state(file_id)
+            if state is not None:
+                if state.get("modified_time") == modified_time:
+                    logger.info(
+                        f"[Drive] Skipping unchanged file: {name}  "
+                        f"(modifiedTime={modified_time})"
+                    )
+                    skipped += 1
+                    continue  # ← never download
+
+                # File changed — detect rename
+                old_name = state.get("indexed_name") or ""
+                if old_name and old_name != indexed_name:
+                    logger.info(
+                        f"[Drive] Processing renamed file: {old_name!r} → {indexed_name!r}"
+                    )
+                    meta["_action"]           = "renamed"
+                    meta["_old_indexed_name"] = old_name
+                else:
+                    logger.info(
+                        f"[Drive] Processing modified file: {name}  "
+                        f"(prev={state.get('modified_time')!r}, "
+                        f"now={modified_time!r})"
+                    )
+                    meta["_action"] = "modified"
+            else:
+                logger.info(f"[Drive] Processing new file: {name}  ({size} bytes)")
+                meta["_action"] = "new"
+        else:
+            logger.info(f"[Drive] Processing file: {name}  ({size} bytes)  [{i}/{total}]")
+            meta["_action"] = "full"
+
+        meta["_modified_time"] = modified_time
+        meta["_indexed_name"]  = indexed_name
+
         logger.debug(f"[Drive] {i}/{total}  {name}  ({size} bytes)")
         try:
             filename, content = _download_file(service, meta)
@@ -331,6 +472,9 @@ def iter_files(
             yield filename, content, meta
         except Exception as e:
             logger.warning(f"[Drive] Skipping {name}: {e}")
+
+    if incremental and skipped:
+        logger.info(f"[Drive] Skipped {skipped} unchanged file(s)")
 
 
 # ── Upload helpers ─────────────────────────────────────────────────────────────
@@ -470,7 +614,7 @@ def crawl(
     folder_id:      str | None       = None,
     ext_filter:     list[str] | None = None,
     modified_after: str | None       = None,
-    recursive:      bool             = False,
+    recursive:      bool             = True,
     max_results:    int              = DEFAULT_MAX,
     api_url:        str              = DEFAULT_API_URL,
     api_key:        str              = DEFAULT_API_KEY,
@@ -478,6 +622,7 @@ def crawl(
     user_id:        str              = "",
     user_email:     str              = "",
     service                          = None,   # pre-built Drive service (web OAuth path)
+    incremental:    bool             = True,   # skip unchanged files by default
 ) -> dict:
     """
     Main entry point for programmatic use.
@@ -505,13 +650,20 @@ def crawl(
         modified_after = modified_after,
         recursive      = recursive,
         max_results    = max_results,
+        incremental    = incremental,
     ):
+        drive_file_id  = file_meta.get("id", "")
+        action         = file_meta.get("_action", "full")
+        modified_time  = file_meta.get("_modified_time", "")
+        indexed_name   = file_meta.get("_indexed_name", filename)
+        old_indexed    = file_meta.get("_old_indexed_name")  # set only for renames
+
         stats["total"] += 1
-        drive_file_id = file_meta.get("id", "")
 
         if dry_run:
+            tag = f"[{action.upper()}]" if action != "full" else ""
             logger.info(
-                f"[DRY RUN] Would upload: {filename}  ({len(content):,} bytes)"
+                f"[DRY RUN] {tag} Would upload: {filename}  ({len(content):,} bytes)"
                 + (f"  [Drive ID: {drive_file_id}]" if drive_file_id else "")
             )
             stats["skipped"] += 1
@@ -525,9 +677,6 @@ def crawl(
         # ── Persist permissions to drive_files table ──────────────────────────
         if _DRIVE_STORE_OK and drive_file_id and _drive_upsert_file is not None:
             try:
-                # Store ``filename`` (the post-export name with extension, e.g.
-                # "Q3 Report.docx") so it matches the ``source`` field in Qdrant
-                # and the UI can join on the same string.
                 _drive_upsert_file(
                     file_id       = drive_file_id,
                     name          = filename,
@@ -538,6 +687,20 @@ def crawl(
                 )
             except Exception as e:
                 logger.warning(f"[Drive] drive_store upsert failed for {filename}: {e}")
+
+        # ── For renamed files: delete stale Qdrant entries by old source name ─
+        # The /upload auto-index uses clean_first=True keyed on the NEW filename.
+        # Old entries stored under the previous name would otherwise persist forever.
+        if old_indexed:
+            try:
+                _delete_old_source(api_url, api_key, old_indexed)
+                logger.info(
+                    f"[Drive] Deleted stale Qdrant entries for renamed source: {old_indexed!r}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[Drive] Could not delete old Qdrant entries for {old_indexed!r}: {e}"
+                )
 
         # ── Upload to RAG pipeline ────────────────────────────────────────────
         try:
@@ -551,10 +714,18 @@ def crawl(
             )
             chunks = result.get("stats", {}).get("total_chunks", "?")
             logger.info(
-                f"[Drive] ✓  {filename}  →  {chunks} chunks indexed"
-                f"  (public={is_public}, shared_with={len(allowed_users)})"
+                f"[Drive] ✓  {filename}  →  {chunks} chunks indexed  "
+                f"(action={action}, public={is_public}, shared_with={len(allowed_users)})"
             )
             stats["indexed"] += 1
+
+            # ── Persist crawl state so the next run can skip this file ────────
+            if _DRIVE_STORE_OK and drive_file_id and _update_crawl_state is not None and modified_time:
+                try:
+                    _update_crawl_state(drive_file_id, modified_time, indexed_name)
+                except Exception as e:
+                    logger.warning(f"[Drive] Could not save crawl state for {filename}: {e}")
+
         except Exception as e:
             logger.error(f"[Drive] ✗  {filename}: {e}")
             stats["errors"] += 1
@@ -567,6 +738,24 @@ def crawl(
         f"errors={stats['errors']}"
     )
     return stats
+
+
+def _delete_old_source(api_url: str, api_key: str, source: str) -> None:
+    """
+    Call DELETE /index/{source} on the RAG server to remove stale Qdrant entries
+    for a renamed file.  Uses the same server the crawler uploads to so the
+    Qdrant client config is always consistent.
+    """
+    headers: dict = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    resp = requests.delete(
+        f"{api_url}/index/{source}",
+        headers=headers,
+        timeout=15,
+    )
+    if not resp.ok and resp.status_code != 404:
+        resp.raise_for_status()
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────

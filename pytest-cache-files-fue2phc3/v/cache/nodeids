@@ -1,0 +1,3 @@
+[
+  "tests/test_admin_rbac.py::TestAdminCreation::test_register_user_cannot_create_admin_directly"
+]

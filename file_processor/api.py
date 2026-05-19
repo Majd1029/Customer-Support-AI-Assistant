@@ -597,7 +597,7 @@ async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 async def optional_user(authorization: str = Header(default="")) -> Optional[dict]:
     """Extract user from JWT if present; return None if missing/invalid.
     Never raises — callers decide what to do with None."""
-    if not AUTH_ENABLED or not authorization:
+    if not AUTH_ENABLED or _auth_verify_token is None or not authorization:
         return None
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
@@ -718,11 +718,11 @@ async def health():
     )
 
     services = {
-        "qdrant":      results[0] if not isinstance(results[0], Exception) else {"status": "down", "error": str(results[0])},
-        "postgres":    results[1] if not isinstance(results[1], Exception) else {"status": "down", "error": str(results[1])},
-        "ollama":      results[2] if not isinstance(results[2], Exception) else {"status": "down", "error": str(results[2])},
-        "groq":        results[3] if not isinstance(results[3], Exception) else {"status": "down", "error": str(results[3])},
-        "openrouter":  results[4] if not isinstance(results[4], Exception) else {"status": "down", "error": str(results[4])},
+        "qdrant":      results[0] if not isinstance(results[0], BaseException) else {"status": "down", "error": str(results[0])},
+        "postgres":    results[1] if not isinstance(results[1], BaseException) else {"status": "down", "error": str(results[1])},
+        "ollama":      results[2] if not isinstance(results[2], BaseException) else {"status": "down", "error": str(results[2])},
+        "groq":        results[3] if not isinstance(results[3], BaseException) else {"status": "down", "error": str(results[3])},
+        "openrouter":  results[4] if not isinstance(results[4], BaseException) else {"status": "down", "error": str(results[4])},
     }
 
     impact = {
@@ -1025,7 +1025,8 @@ async def upload(
     caption_backend: "groq" (cloud, default) or "llava" (local Ollama).
     Disable captioning only for testing — uncaptioned image chunks embed poorly.
     """
-    suffix = Path(file.filename).suffix.lower()
+    filename = file.filename or "unknown"
+    suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED:
         raise HTTPException(
             status_code=415,
@@ -1034,7 +1035,7 @@ async def upload(
 
     # Save uploaded file with a unique name to avoid collisions
     uid       = uuid.uuid4().hex[:8]
-    safe_name = f"{uid}_{file.filename}"
+    safe_name = f"{uid}_{filename}"
     dest      = UPLOAD_DIR / safe_name
 
     # Stream to disk while checking size limit
@@ -1087,10 +1088,10 @@ async def upload(
             )
 
         job_id = uid
-        _job_create(job_id, file.filename)
+        _job_create(job_id, filename)
         _UPLOAD_EXECUTOR.submit(
             _upload_worker_wrap,
-            job_id, dest, file.filename, uid, suffix,
+            job_id, dest, filename, uid, suffix,
             caption, caption_backend, password,
             owner_id, owner_email,
             drive_file_id, is_public,
@@ -1100,7 +1101,7 @@ async def upload(
             status_code=202,
             content={
                 "job_id":    job_id,
-                "filename":  file.filename,
+                "filename":  filename,
                 "status":    "pending",
                 "poll_url":  f"/tasks/{job_id}",
                 "message":   "Processing started. Poll /tasks/{job_id} for status.",
@@ -1133,14 +1134,14 @@ async def upload(
 
         data = {
             "type"       : "csv_import",
-            "source_file": file.filename,
+            "source_file": filename,
             "table"      : table_name,
             "rows"       : info["shape"][0],
             "cols"       : info["shape"][1],
             "columns"    : info["columns"],
         }
 
-        result_path = RESULTS_DIR / f"{uid}_{Path(file.filename).stem}.json"
+        result_path = RESULTS_DIR / f"{uid}_{Path(filename).stem}.json"
         result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return JSONResponse(content=data)
 
@@ -1176,11 +1177,11 @@ async def upload(
                 time.sleep(0.3)
 
     # Use original filename for consistent naming across images, chunks and results
-    result.source_file = file.filename
+    result.source_file = filename
 
     # Save extracted images
     from file_processor.extract import _save_images
-    _save_images(result.images, IMAGES_DIR, file.filename)
+    _save_images(result.images, IMAGES_DIR, filename)
 
     # Build output dict (RAG-ready chunks) — uses result.source_file for chunk_id and image_file
     data = _to_dict(result, doc_uid=uid)
@@ -1208,7 +1209,7 @@ async def upload(
             chunk["image_url"] = f"/images/{chunk['image_file']}"
 
     # Persist result as JSON
-    result_path = RESULTS_DIR / f"{uid}_{Path(file.filename).stem}.json"
+    result_path = RESULTS_DIR / f"{uid}_{Path(filename).stem}.json"
     result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ── Auto-index into Qdrant immediately after extraction ──────────────────
@@ -1440,6 +1441,7 @@ async def collection_stats(
     Useful for monitoring index health without opening the Qdrant dashboard.
     """
     _require_embedding()
+    assert _qdrant_client is not None
     try:
         stats = _emb_collection_stats(_qdrant_client, collection=collection)
     except Exception as e:
@@ -1460,6 +1462,7 @@ async def list_backups(
     Mount /qdrant/snapshots to a host volume for persistence.
     """
     _require_embedding()
+    assert _qdrant_client is not None
     try:
         snapshots = _emb_list_snapshots(_qdrant_client, collection=collection)
     except Exception as e:
@@ -1479,6 +1482,7 @@ async def create_backup(
     Returns the snapshot name and size.
     """
     _require_embedding()
+    assert _qdrant_client is not None
     try:
         snapshot = _emb_create_snapshot(_qdrant_client, collection=collection)
     except Exception as e:
@@ -1493,6 +1497,7 @@ async def delete_backup(
 ):
     """Delete a named snapshot from Qdrant."""
     _require_embedding()
+    assert _qdrant_client is not None
     if not snapshot_name.strip():
         raise HTTPException(status_code=422, detail="snapshot_name must not be empty.")
     try:
@@ -1542,21 +1547,25 @@ class LoginRequest(BaseModel):
 async def auth_register(req: RegisterRequest):
     if not AUTH_ENABLED:
         raise HTTPException(503, "Auth service unavailable")
+    assert _auth_register is not None and _auth_verify_token is not None
     token, err = _auth_register(req.username, req.password, req.email)
-    if err:
-        raise HTTPException(400, err)
+    if err or not token:
+        raise HTTPException(400, err or "Unknown registration error")
     # decode token to get user_id
     info = _auth_verify_token(token)
-    return {"token": token, "user_id": info["user_id"], "username": info["username"], "email": info.get("email", "")}
+    if not info:
+        raise HTTPException(500, "Failed to verify token after registration")
+    return {"token": token, "user_id": info["user_id"], "username": info["username"], "email": info.get("email", ""), "role": info.get("role", "user")}
 
 
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest):
     if not AUTH_ENABLED:
         raise HTTPException(503, "Auth service unavailable")
+    assert _auth_login is not None
     user, err = _auth_login(req.username_or_email, req.password)
-    if err:
-        raise HTTPException(401, err)
+    if err or not user:
+        raise HTTPException(401, err or "Unknown login error")
     return user
 
 
@@ -1570,8 +1579,8 @@ async def auth_google_start():
     The code_verifier is embedded in the `state` parameter so it is echoed back
     by Google in the callback without needing a server-side session.
     """
-    if not GOOGLE_AUTH_ENABLED:
-        raise HTTPException(503, "Google OAuth not configured — set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env")
+    if not GOOGLE_AUTH_ENABLED or not AUTH_ENABLED:
+        raise HTTPException(503, "Google OAuth not configured or Auth unavailable")
     try:
         import hashlib as _hl
         import base64 as _b64
@@ -1619,6 +1628,9 @@ async def auth_google_callback(code: str = "", error: str = "", state: str = "")
     """
     if error:
         html = f"""<script>window.opener?.postMessage({{type:'google_auth',error:'{error}'}}, '{FRONTEND_URL}');window.close();</script>"""
+        return HTMLResponse(html)
+    if not GOOGLE_AUTH_ENABLED or not AUTH_ENABLED:
+        html = f"""<script>window.opener?.postMessage({{type:'google_auth',error:'OAuth not configured'}}, '{FRONTEND_URL}');window.close();</script>"""
         return HTMLResponse(html)
     if not code:
         html = f"""<script>window.opener?.postMessage({{type:'google_auth',error:'No code returned'}}, '{FRONTEND_URL}');window.close();</script>"""
@@ -1673,7 +1685,7 @@ async def auth_google_callback(code: str = "", error: str = "", state: str = "")
         name      = user_info.get("name", email.split("@")[0])
         if not google_id:
             raise ValueError("No sub in userinfo")
-
+        assert _auth_google_user is not None
         user = _auth_google_user(google_id, email, name)
         if not user:
             raise ValueError("Failed to create/find Google user")
@@ -1703,6 +1715,7 @@ async def auth_me(authorization: str = Header(default="")):
         raise HTTPException(401, "No token")
     if not AUTH_ENABLED:
         raise HTTPException(503, "Auth service unavailable")
+    assert _auth_verify_token is not None and _auth_get_user is not None
     info = _auth_verify_token(token)
     if not info:
         raise HTTPException(401, "Invalid or expired token")
@@ -1710,6 +1723,136 @@ async def auth_me(authorization: str = Header(default="")):
     if not user:
         raise HTTPException(404, "User not found")
     return user
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMIN MANAGEMENT ROUTES
+# All routes require the "admin" role (enforced by require_admin dependency).
+# Normal users receive HTTP 403 before any handler body executes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CreateAdminRequest(BaseModel):
+    username: str
+    password: str
+    email:    str = ""
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str   # "user" | "admin"
+
+
+@app.post("/admin/users", dependencies=[Depends(require_admin)])
+async def admin_create_user(req: CreateAdminRequest):
+    """Create a new admin account. Requires caller to be an admin."""
+    if not AUTH_ENABLED:
+        raise HTTPException(503, "Auth service unavailable")
+    from file_processor.auth_manager import create_admin_user
+    user, err = create_admin_user(req.username, req.password, req.email)
+    if err or not user:
+        raise HTTPException(400, detail=err or "Unknown error creating admin user")
+    return {"message": "Admin user created", "user_id": user["user_id"],
+            "username": user["username"], "role": user["role"]}
+
+
+@app.get("/admin/users", dependencies=[Depends(require_admin)])
+async def admin_list_users():
+    """List all registered users (admin only)."""
+    if not AUTH_ENABLED:
+        raise HTTPException(503, "Auth service unavailable")
+    from file_processor.auth_manager import _PG_OK, _get_conn, _FALLBACK
+    users: list[dict] = []
+    if _PG_OK:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT user_id, username, email, role, created_at "
+                        "FROM auth_users ORDER BY created_at DESC"
+                    )
+                    for row in cur.fetchall():
+                        users.append({
+                            "user_id":    row[0],
+                            "username":   row[1],
+                            "email":      row[2] or "",
+                            "role":       row[3] or "user",
+                            "created_at": row[4].isoformat() if row[4] else None,
+                        })
+        except Exception as e:
+            raise HTTPException(500, detail=f"Failed to list users: {e}")
+    else:
+        users = [
+            {"user_id": v["user_id"], "username": v["username"],
+             "email": v.get("email", ""), "role": v.get("role", "user"),
+             "created_at": None}
+            for v in _FALLBACK.values()
+        ]
+    return {"users": users, "total": len(users)}
+
+
+@app.put("/admin/users/{user_id}/role", dependencies=[Depends(require_admin)])
+async def admin_update_role(user_id: str, req: UpdateRoleRequest, admin: dict = Depends(require_admin)):
+    """Promote or demote a user. Admins cannot demote themselves."""
+    if not AUTH_ENABLED:
+        raise HTTPException(503, "Auth service unavailable")
+    if req.role not in ("user", "admin"):
+        raise HTTPException(400, detail="role must be 'user' or 'admin'")
+    if user_id == admin["user_id"] and req.role != "admin":
+        raise HTTPException(400, detail="You cannot remove your own admin role")
+    from file_processor.auth_manager import _PG_OK, _get_conn, _FALLBACK
+    if _PG_OK:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE auth_users SET role=%s WHERE user_id=%s RETURNING username",
+                        (req.role, user_id),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            if not row:
+                raise HTTPException(404, "User not found")
+            return {"message": f"Role updated to '{req.role}'", "username": row[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, detail=f"Role update failed: {e}")
+    else:
+        if user_id not in _FALLBACK:
+            raise HTTPException(404, "User not found")
+        _FALLBACK[user_id]["role"] = req.role
+        return {"message": f"Role updated to '{req.role}'"}
+
+
+@app.delete("/admin/users/{user_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
+    """Delete a user account (admin only). Admins cannot delete themselves."""
+    if not AUTH_ENABLED:
+        raise HTTPException(503, "Auth service unavailable")
+    if user_id == admin["user_id"]:
+        raise HTTPException(400, detail="You cannot delete your own account via the admin API")
+    from file_processor.auth_manager import _PG_OK, _get_conn, _FALLBACK
+    if _PG_OK:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM auth_users WHERE user_id=%s RETURNING username",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            if not row:
+                raise HTTPException(404, "User not found")
+            return {"message": f"User '{row[0]}' deleted"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, detail=f"Delete failed: {e}")
+    else:
+        if user_id not in _FALLBACK:
+            raise HTTPException(404, "User not found")
+        del _FALLBACK[user_id]
+        return {"message": "User deleted"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1723,6 +1866,7 @@ async def list_conversations(current_user: dict = Depends(require_user)):
     """List the authenticated user's conversations (newest first)."""
     if not AUTH_ENABLED:
         return {"conversations": [], "total": 0}
+    assert _conv_list_sessions is not None
     uid      = current_user["user_id"]
     sessions = _conv_list_sessions(uid)
     return {"conversations": sessions, "total": len(sessions)}
@@ -1736,6 +1880,7 @@ async def get_conversation_messages(
     """Load messages for a conversation the caller owns."""
     if not AUTH_ENABLED:
         return {"messages": []}
+    assert _conv_load_messages is not None
     uid      = current_user["user_id"]
     messages = _conv_load_messages(session_id, uid)
     return {"messages": messages}
@@ -1757,6 +1902,7 @@ async def save_conversation_messages(
     """Persist (full-overwrite) messages for a conversation the caller owns."""
     if not AUTH_ENABLED:
         return {"ok": True}
+    assert _conv_update_label is not None and _conv_save_messages is not None
     uid = current_user["user_id"]
     # save_messages() itself validates ownership via INSERT…ON CONFLICT
     if req.label:
@@ -1776,6 +1922,7 @@ async def update_conversation_label(
         raise HTTPException(400, "label required")
     if not AUTH_ENABLED:
         return {"ok": True}
+    assert _conv_update_label is not None
     uid = current_user["user_id"]
     ok  = _conv_update_label(session_id, uid, label)
     return {"ok": ok}
@@ -1788,6 +1935,7 @@ async def delete_conversation(
 ):
     if not AUTH_ENABLED:
         return {"ok": True}
+    assert _conv_delete_session is not None
     uid = current_user["user_id"]
     ok  = _conv_delete_session(session_id, uid)
     return {"ok": ok}
@@ -1834,6 +1982,7 @@ async def delete_session(session_id: str, x_user_id: str = Header(default="")):
     """
     if not MEMORY_ENABLED:
         raise HTTPException(status_code=503, detail="Memory layer not available.")
+    assert _mem_clear_session is not None
     user_id = x_user_id or session_id
     try:
         deleted = _mem_clear_session(session_id, user_id)
@@ -1858,6 +2007,7 @@ async def get_session(session_id: str, x_user_id: str = Header(default="")):
     """
     if not MEMORY_ENABLED:
         raise HTTPException(status_code=503, detail="Memory layer not available.")
+    assert _mem_read_buffer is not None
     user_id      = x_user_id or session_id
     turns        = _mem_read_buffer(session_id, user_id)
     total_tokens = sum(t.token_count for t in turns)
@@ -1899,6 +2049,7 @@ async def get_user_facts(user_id: str):
     """
     if not MEMORY_ENABLED:
         raise HTTPException(status_code=503, detail="Memory layer not available.")
+    assert _mem_get_facts is not None
     facts = _mem_get_facts(user_id)
     return JSONResponse(content={"user_id": user_id, "facts": facts})
 
@@ -1919,6 +2070,7 @@ async def set_user_fact(user_id: str, req: SetFactRequest):
     value = req.value.strip()
     if not key or not value:
         raise HTTPException(status_code=422, detail="key and value must not be empty.")
+    assert _mem_set_fact is not None
     _mem_set_fact(user_id, key, value)
     return JSONResponse(content={"user_id": user_id, "key": key, "value": value})
 
@@ -1932,6 +2084,7 @@ async def delete_user_fact(user_id: str, key: str):
     """
     if not MEMORY_ENABLED:
         raise HTTPException(status_code=503, detail="Memory layer not available.")
+    assert _mem_delete_fact is not None
     deleted = _mem_delete_fact(user_id, key.strip().lower())
     return JSONResponse(content={"user_id": user_id, "key": key, "deleted": deleted})
 
@@ -1945,6 +2098,7 @@ async def clear_all_user_facts(user_id: str):
     """
     if not MEMORY_ENABLED:
         raise HTTPException(status_code=503, detail="Memory layer not available.")
+    assert _mem_clear_user_facts is not None
     count = _mem_clear_user_facts(user_id)
     return JSONResponse(content={"user_id": user_id, "deleted": count})
 
@@ -2065,7 +2219,9 @@ async def index_document(req: IndexRequest):
 
     source = doc.get("source_file", req.result_file)
 
+
     try:
+        assert _qdrant_client is not None
         _emb_ensure_collection(_qdrant_client, req.collection)
         stats = _emb_index_chunks(
             chunks,
@@ -2102,6 +2258,7 @@ async def search_documents(req: SearchRequest):
     Returns a ranked list of chunks with score and full metadata.
     """
     _require_embedding()
+    assert _qdrant_client is not None
 
     if not req.query.strip():
         raise HTTPException(status_code=422, detail="Query must not be empty.")
@@ -2269,6 +2426,7 @@ async def ask(
     retrieval_question = req.question
 
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
+        assert _mem_load_context is not None
         try:
             mem_ctx = await _mem_load_context(
                 session_id     = req.session_id,
@@ -2283,6 +2441,7 @@ async def ask(
             logger.warning(f"[MEMORY] load_memory_context failed: {_mem_exc}")
 
     # ── Step 1: Retrieve evidence (single-hop or multi-hop) ───────────────────
+    assert _qdrant_client is not None
     sf = _build_source_filter(req.source_filter)
     _retriever_kwargs = dict(
         collection     = req.collection,
@@ -2410,6 +2569,7 @@ async def ask(
     # ── Step 6: LLM-as-a-Judge (optional, best-effort) ───────────────────────
     judge_data: dict | None = None
     if req.judge and JUDGE_ENABLED:
+        assert _judge_answer is not None
         try:
             jr = _judge_answer(
                 question      = req.question,
@@ -2430,12 +2590,14 @@ async def ask(
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
         # Use JWT user_id for memory scoping — fall back to session_id only when
         # the request is unauthenticated (guest / anonymous usage).
-        _ask_mem_uid = _ask_uid or req.session_id
+        _ask_sid = req.session_id
+        _ask_mem_uid = _ask_uid or _ask_sid
 
         def _write_turns() -> None:
+            assert _mem_write_turn is not None
             try:
-                _mem_write_turn(req.session_id, _ask_mem_uid, "user",      req.question)
-                _mem_write_turn(req.session_id, _ask_mem_uid, "assistant", result.answer)
+                _mem_write_turn(_ask_sid, _ask_mem_uid, "user",      req.question)
+                _mem_write_turn(_ask_sid, _ask_mem_uid, "assistant", result.answer)
             except Exception as _wt_exc:
                 logger.warning(f"[MEMORY] write_turn failed: {_wt_exc}")
         background_tasks.add_task(_write_turns)
@@ -2444,8 +2606,9 @@ async def ask(
         # Runs as a separate BackgroundTask so write_turns() always completes first.
         def _maybe_summarise() -> None:
             try:
-                if _mem_should_summarise and _mem_should_summarise(req.session_id):
-                    _mem_summarise(req.session_id, _ask_mem_uid, _groq_client)
+                if _mem_should_summarise and _mem_should_summarise(_ask_sid):
+                    assert _mem_summarise is not None
+                    _mem_summarise(_ask_sid, _ask_mem_uid, _groq_client)
             except Exception as _s_exc:
                 logger.warning(f"[MEMORY] summarise_session failed: {_s_exc}")
         background_tasks.add_task(_maybe_summarise)
@@ -2604,6 +2767,7 @@ async def ask_stream(
     _stream_retrieval_question = req.question
 
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
+        assert _mem_load_context is not None
         try:
             _stream_mem_ctx = await _mem_load_context(
                 session_id     = req.session_id,
@@ -2618,6 +2782,7 @@ async def ask_stream(
             logger.warning(f"[MEMORY] /ask/stream load_memory_context failed: {_sm_exc}")
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
+    assert _qdrant_client is not None
     sf = _build_source_filter(req.source_filter)
     _retriever_kwargs = dict(
         collection     = req.collection,
@@ -2767,6 +2932,7 @@ async def ask_stream(
         # LLM-as-a-Judge (optional, best-effort)
         judge_data: dict | None = None
         if req.judge and JUDGE_ENABLED:
+            assert _judge_answer is not None
             try:
                 jr = _judge_answer(
                     question      = req.question,
@@ -2843,7 +3009,8 @@ async def ask_stream(
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
         # Use JWT user_id for memory scoping — fall back to session_id only when
         # the request is unauthenticated (guest / anonymous usage).
-        _stream_mem_uid = _stream_uid or req.session_id
+        _stream_sid = req.session_id
+        _stream_mem_uid = _stream_uid or _stream_sid
 
         def _stream_write_turns() -> None:
             answer = _wb.get("answer")
@@ -2852,18 +3019,20 @@ async def ask_stream(
                 # Don't write a partial answer into the conversation buffer.
                 logger.debug(
                     f"[MEMORY] /ask/stream: generator incomplete for session "
-                    f"{req.session_id[:8]}… — skipping write-back."
+                    f"{_stream_sid[:8]}… — skipping write-back."
                 )
                 return
+            assert _mem_write_turn is not None
             try:
-                _mem_write_turn(req.session_id, _stream_mem_uid, "user",      req.question)
-                _mem_write_turn(req.session_id, _stream_mem_uid, "assistant", answer)
+                _mem_write_turn(_stream_sid, _stream_mem_uid, "user",      req.question)
+                _mem_write_turn(_stream_sid, _stream_mem_uid, "assistant", answer)
             except Exception as _wt_exc:
                 logger.warning(f"[MEMORY] /ask/stream write_turn failed: {_wt_exc}")
                 return
+            assert _mem_should_summarise is not None and _mem_summarise is not None
             try:
-                if _mem_should_summarise and _mem_should_summarise(req.session_id):
-                    _mem_summarise(req.session_id, _stream_mem_uid, _groq_client)
+                if _mem_should_summarise(_stream_sid):
+                    _mem_summarise(_stream_sid, _stream_mem_uid, _groq_client)
             except Exception as _s_exc:
                 logger.warning(f"[MEMORY] /ask/stream summarise_session failed: {_s_exc}")
             # Sprint 4 — extract structured facts from the latest turns.
@@ -2871,7 +3040,7 @@ async def ask_stream(
             # that have been budget-trimmed from the live window are still seen.
             try:
                 if _mem_extract_facts and _mem_read_all_turns and _groq_client:
-                    all_turns = _mem_read_all_turns(req.session_id, _stream_mem_uid)
+                    all_turns = _mem_read_all_turns(_stream_sid, _stream_mem_uid)
                     _mem_extract_facts(_stream_mem_uid, all_turns, _groq_client)
             except Exception as _ef_exc:
                 logger.warning(f"[MEMORY] /ask/stream extract_and_store_facts failed: {_ef_exc}")
@@ -3007,12 +3176,13 @@ async def list_indexed_documents(
         [{ "source": str, "chunks": int, "types": {"text": n, "table": n, ...} }]
     """
     _require_embedding()
+    assert _qdrant_client is not None
     limit    = min(limit, 200)
     uid      = current_user["user_id"]
     is_admin = current_user.get("role") == "admin"
 
     # Admins see everything; regular users see their own + global KB
-    filter_owner = None if is_admin else uid
+    filter_owner = "" if is_admin else str(uid)
     try:
         all_docs = _emb_list_indexed_docs(
             _qdrant_client, collection=collection, owner_id=filter_owner
@@ -3061,6 +3231,7 @@ async def get_document_chunks(
         limit:      Maximum chunks to return (default 1 000, max 5 000).
     """
     _require_embedding()
+    assert _qdrant_client is not None
     limit = min(limit, 5000)
     try:
         chunks = _emb_get_chunks_by_doc_id(
@@ -3090,6 +3261,7 @@ async def delete_indexed_document(
     This does NOT delete the result JSON in results/ — only the Qdrant points.
     """
     _require_embedding()
+    assert _qdrant_client is not None
     if not source.strip():
         raise HTTPException(status_code=422, detail="source must not be empty.")
     try:
@@ -3272,7 +3444,7 @@ class DriveCrawlRequest(BaseModel):
     folder_id:      str | None        = None
     types:          list[str] | None  = None   # ["pdf", "docx", ...]
     modified_after: str | None        = None   # YYYY-MM-DD
-    recursive:      bool              = False
+    recursive:      bool              = True   # default True — traverses sub-folders automatically
     max_results:    int               = 200
     # Owner identity — same as GmailCrawlRequest above.
     user_id:    str = ""
@@ -3383,7 +3555,7 @@ def _run_crawler(job_id: str, source: str, kwargs: dict) -> None:
 
 # ── Crawler endpoints ─────────────────────────────────────────────────────────
 
-@app.post("/crawl/gmail", dependencies=[Depends(require_api_key)])
+@app.post("/crawl/gmail", dependencies=[Depends(require_admin)])
 async def start_gmail_crawl(req: GmailCrawlRequest, background_tasks: BackgroundTasks):
     """
     Start a background Gmail crawl job.
@@ -3407,7 +3579,7 @@ async def start_gmail_crawl(req: GmailCrawlRequest, background_tasks: Background
     return {"job_id": job_id, "status": "running", "poll_url": f"/crawl/status/{job_id}"}
 
 
-@app.post("/crawl/drive", dependencies=[Depends(require_api_key)])
+@app.post("/crawl/drive", dependencies=[Depends(require_admin)])
 async def start_drive_crawl(req: DriveCrawlRequest, background_tasks: BackgroundTasks):
     """
     Start a background Google Drive crawl job.
@@ -3431,73 +3603,41 @@ async def start_drive_crawl(req: DriveCrawlRequest, background_tasks: Background
     return {"job_id": job_id, "status": "running", "poll_url": f"/crawl/status/{job_id}"}
 
 
-@app.get("/crawl/status/{job_id}")
+@app.get("/crawl/status/{job_id}", dependencies=[Depends(require_admin)])
 async def get_crawl_status(job_id: str):
     """
-    Poll the status of a crawl job.
+    Poll the status of a crawl job (admin only).
 
     While running, returns live counts of files indexed/skipped/errored and
     the name of the file currently being processed.
 
-    After the job completes or fails, the result is moved to history and this
-    endpoint returns 404.  Use GET /crawl/history to retrieve past runs.
+    After the job completes or fails, the result is moved to the history
+    store and this endpoint returns 404.
     """
     with _CRAWL_LOCK:
         job = _CRAWL_JOBS.get(job_id)
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Job {job_id!r} not found. It may have finished — check GET /crawl/history.",
-        )
-    return job
 
+    if job:
+        return dict(job)
 
-@app.get("/crawl/history")
-async def get_crawl_history(limit: int = 20):
-    """
-    Return the most recent completed/failed crawl runs (newest first).
-
-    Each entry contains the same fields as /crawl/status plus finished_at.
-    """
+    # Check history for completed/failed jobs
     with _CRAWL_LOCK:
-        entries = list(_CRAWL_HISTORY[:limit])
-    return {"total": len(entries), "runs": entries}
+        for entry in _CRAWL_HISTORY:
+            if entry.get("job_id") == job_id:
+                return dict(entry)
+
+    raise HTTPException(status_code=404, detail=f"Crawl job {job_id!r} not found")
 
 
-@app.get("/crawl/active")
+@app.get("/crawl/history", dependencies=[Depends(require_admin)])
+async def get_crawl_history():
+    """Return the list of completed crawl runs, newest first (admin only)."""
+    with _CRAWL_LOCK:
+        return {"history": list(_CRAWL_HISTORY)}
+
+
+@app.get("/crawl/active", dependencies=[Depends(require_admin)])
 async def get_active_crawls():
-    """Return all currently running crawl jobs."""
+    """Return all currently running crawl jobs (admin only)."""
     with _CRAWL_LOCK:
-        jobs = list(_CRAWL_JOBS.values())
-    return {"total": len(jobs), "jobs": jobs}
-
-
-@app.get("/drive/files")
-async def get_drive_files(owner_email: str, limit: int = 200):
-    """
-    List Drive files indexed for a given Google account.
-
-    Returns permission metadata (is_public, allowed_users, drive_file_id)
-    for each file so the UI can render permission badges.
-
-    Query params:
-        owner_email  — the user's Google / Gmail address
-        limit        — max results (default 200, max 500)
-
-    Response:
-        {"total": N, "files": [{file_id, name, mime_type, owner_email,
-                                 allowed_users, is_public, crawled_at}]}
-    """
-    if not DRIVE_STORE_ENABLED or _list_drive_files is None:
-        return {"total": 0, "files": [], "detail": "Drive store not available"}
-
-    if not owner_email:
-        return {"total": 0, "files": []}
-
-    clamped_limit = min(max(1, limit), 500)
-    try:
-        files = _list_drive_files(owner_email, limit=clamped_limit)
-        return {"total": len(files), "files": files}
-    except Exception as e:
-        logger.error(f"[DRIVE FILES] {e}")
-        return {"total": 0, "files": [], "detail": str(e)}
+        return {"jobs": list(_CRAWL_JOBS.values())}

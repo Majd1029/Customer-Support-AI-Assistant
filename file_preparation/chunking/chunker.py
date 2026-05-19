@@ -918,7 +918,7 @@ def _get_txt_embed_model():
     """
     global _txt_embed_model
     if _txt_embed_model is not None:
-        return _txt_embed_model if _txt_embed_model else None
+        return None if _txt_embed_model is False else _txt_embed_model
     try:
         from sentence_transformers import SentenceTransformer
         logger.info("  [txt-chunker] Loading sentence-transformers model ...")
@@ -936,7 +936,7 @@ def _get_txt_embed_model():
             logger.info("  [txt-chunker] Model ready (downloaded).")
     except Exception:
         _txt_embed_model = False   # mark as unavailable
-    return _txt_embed_model if _txt_embed_model else None
+    return None if _txt_embed_model is False else _txt_embed_model
 
 
 def _embed_sentences_txt(sentences: list[str]):

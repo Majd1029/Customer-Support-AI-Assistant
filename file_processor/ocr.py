@@ -64,7 +64,7 @@ def preprocess_for_ocr(img: Image.Image, handwriting: bool = True) -> Image.Imag
     target_w = 2000 if handwriting else 1000
     if w < target_w:
         scale = target_w / w
-        img   = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        img   = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
         logger.debug(f"  preprocess: upscaled {w}×{h} → {img.size}")
 
     if handwriting:

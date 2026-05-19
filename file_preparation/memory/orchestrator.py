@@ -150,7 +150,7 @@ async def load_memory_context(
 
     async def _read_turns() -> list[Turn]:
         try:
-            return await loop.run_in_executor(None, read_buffer, session_id, user_id)
+            return await loop.run_in_executor(None, lambda: read_buffer(session_id, user_id))
         except Exception as exc:
             logger.warning(f"[MEMORY] buffer read failed ({exc}) — proceeding without history.")
             return []
@@ -173,7 +173,7 @@ async def load_memory_context(
     async def _read_preferences() -> list[str]:
         # Sprint 5 — semantic preferences (recalled relative to the current query)
         try:
-            return await loop.run_in_executor(None, recall_preferences, user_id, raw_query)
+            return await loop.run_in_executor(None, lambda: recall_preferences(user_id, raw_query))
         except Exception as exc:
             logger.warning(f"[MEMORY] semantic recall failed ({exc}) — proceeding without preferences.")
             return []

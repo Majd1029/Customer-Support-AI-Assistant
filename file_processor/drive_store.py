@@ -1,18 +1,30 @@
 """
-drive_store.py — PostgreSQL-backed Drive file permission store.
+drive_store.py — PostgreSQL-backed Drive file permission + crawl-state store.
 
 Table created automatically on first use:
   drive_files(file_id PK, name, mime_type, owner_email,
-              allowed_users TEXT[], is_public BOOL, crawled_at TIMESTAMPTZ)
+              allowed_users TEXT[], is_public BOOL, crawled_at TIMESTAMPTZ,
+              modified_time TEXT, indexed_name TEXT)
+
+  modified_time — the Drive API modifiedTime value (ISO-8601 string).
+                  Used for incremental crawls: if the stored value matches
+                  the current Drive value the file has not changed and can
+                  be skipped.
+  indexed_name  — the filename written to Qdrant as the ``source`` field
+                  (may differ from Drive ``name`` for Google Workspace
+                  exports, e.g. "Report.gdoc" is exported as "Report.docx").
+                  Used to delete stale Qdrant entries when a file is renamed.
 
 Falls back to an in-process dict when PostgreSQL is unavailable.
 The in-process store is lost on server restart — use PostgreSQL in production.
 
 Public API:
   upsert_file(file_id, name, mime_type, owner_email, allowed_users, is_public)
-  get_file(file_id)                   → dict | None
-  get_allowed_users(file_id)          → list[str]
-  is_file_accessible(file_id, email)  → bool
+  get_file(file_id)                          → dict | None
+  get_crawl_state(file_id)                   → dict | None  {modified_time, indexed_name}
+  update_crawl_state(file_id, modified_time, indexed_name)
+  get_allowed_users(file_id)                 → list[str]
+  is_file_accessible(file_id, email)         → bool
 """
 
 from __future__ import annotations
@@ -53,18 +65,19 @@ def _ensure_tables() -> bool:
                         owner_email   TEXT NOT NULL,
                         allowed_users TEXT[],
                         is_public     BOOLEAN DEFAULT false,
-                        crawled_at    TIMESTAMPTZ DEFAULT now()
+                        crawled_at    TIMESTAMPTZ DEFAULT now(),
+                        modified_time TEXT,
+                        indexed_name  TEXT
                     )
                 """)
-                # Safe migration for deployments that predate this table
-                cur.execute("""
-                    ALTER TABLE drive_files
-                    ADD COLUMN IF NOT EXISTS allowed_users TEXT[]
-                """)
-                cur.execute("""
-                    ALTER TABLE drive_files
-                    ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT false
-                """)
+                # Safe migrations for deployments that predate these columns
+                for ddl in (
+                    "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS allowed_users TEXT[]",
+                    "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT false",
+                    "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS modified_time TEXT",
+                    "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS indexed_name TEXT",
+                ):
+                    cur.execute(ddl)
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_drive_files_owner
                     ON drive_files(owner_email)
@@ -157,6 +170,86 @@ def get_file(file_id: str) -> Optional[dict]:
             return None
 
     return _FILES.get(file_id)
+
+
+def get_crawl_state(file_id: str) -> Optional[dict]:
+    """
+    Return the stored incremental crawl state for a Drive file, or None if the
+    file has never been crawled before.
+
+    Return dict keys:
+      modified_time  — Drive modifiedTime ISO string from the last successful crawl
+      indexed_name   — filename written to Qdrant source field (may differ from
+                       the current Drive name when a file was renamed)
+    """
+    if _PG_OK:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT modified_time, indexed_name FROM drive_files WHERE file_id = %s",
+                        (file_id,),
+                    )
+                    row = cur.fetchone()
+            if row is None or (row[0] is None and row[1] is None):
+                return None
+            return {"modified_time": row[0], "indexed_name": row[1]}
+        except Exception as e:
+            logger.error(f"[DRIVE STORE] get_crawl_state({file_id}): {e}")
+            return None
+
+    rec = _FILES.get(file_id)
+    if rec is None:
+        return None
+    mt = rec.get("modified_time")
+    ni = rec.get("indexed_name")
+    if mt is None and ni is None:
+        return None
+    return {"modified_time": mt, "indexed_name": ni}
+
+
+def update_crawl_state(
+    file_id:       str,
+    modified_time: str,
+    indexed_name:  str,
+) -> None:
+    """
+    Persist the incremental crawl state for a Drive file after a successful
+    index operation.
+
+    - ``modified_time`` — Drive API modifiedTime at the time of crawl.
+    - ``indexed_name``  — The filename written to Qdrant (after any export
+                          extension conversion, e.g. "Report.docx").
+
+    Creates a minimal row if the file_id is not yet in the table so this can
+    be called without a preceding upsert_file() call.
+    """
+    if _PG_OK:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO drive_files (file_id, owner_email, modified_time, indexed_name, crawled_at)
+                        VALUES (%s, '', %s, %s, now())
+                        ON CONFLICT (file_id) DO UPDATE SET
+                            modified_time = EXCLUDED.modified_time,
+                            indexed_name  = EXCLUDED.indexed_name,
+                            crawled_at    = now()
+                        """,
+                        (file_id, modified_time, indexed_name),
+                    )
+                conn.commit()
+            return
+        except Exception as e:
+            logger.error(f"[DRIVE STORE] update_crawl_state({file_id}): {e}")
+
+    # Fallback
+    if file_id not in _FILES:
+        _FILES[file_id] = {"file_id": file_id}
+    _FILES[file_id]["modified_time"] = modified_time
+    _FILES[file_id]["indexed_name"]  = indexed_name
+    _FILES[file_id]["crawled_at"]    = datetime.now(timezone.utc).isoformat()
 
 
 def get_allowed_users(file_id: str) -> list[str]:

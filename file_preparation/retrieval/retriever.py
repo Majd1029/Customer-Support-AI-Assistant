@@ -270,7 +270,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """
     if not a or not b or len(a) != len(b):
         return 0.0
-    if _NUMPY_AVAILABLE:
+    if _np is not None:
         return float(_np.dot(
             _np.asarray(a, dtype=_np.float32),
             _np.asarray(b, dtype=_np.float32),

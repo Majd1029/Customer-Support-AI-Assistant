@@ -53,7 +53,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 
 from loguru import logger
 
@@ -286,13 +286,22 @@ class ContextBuilder:
                 continue
 
             metadata: dict = c.get("metadata") or c.get("payload") or {}
-            hop:     int   = int(c.get("hop",     metadata.get("hop", 1)))
+            hop_val = c.get("hop")
+            if hop_val is None:
+                hop_val = metadata.get("hop")
+            hop: int = int(hop_val) if hop_val is not None else 1
+
             # Default to False so that chunks missing an explicit `primary` flag
             # (e.g. raw neighbor dicts from get_neighbors()) are treated as
             # context-expansion chunks rather than primary retrieval hits.
             # Callers that produce primary chunks always set primary=True explicitly.
-            primary: bool  = bool(c.get("primary", metadata.get("primary", False)))
-            score:   float = float(c.get("score", 0.0))
+            prim_val = c.get("primary")
+            if prim_val is None:
+                prim_val = metadata.get("primary")
+            primary: bool = bool(prim_val) if prim_val is not None else False
+
+            score_val = c.get("score")
+            score: float = float(score_val) if score_val is not None else 0.0
 
             normalised.append({
                 "content":     content.strip(),
@@ -740,7 +749,7 @@ class OllamaBackend:
         }
 
     @staticmethod
-    def _extract_token_counts(response: dict) -> dict:
+    def _extract_token_counts(response: Any) -> dict:
         p = response.get("prompt_eval_count", 0) or 0
         c = response.get("eval_count", 0)        or 0
         return {"prompt": p, "completion": c, "total": p + c}

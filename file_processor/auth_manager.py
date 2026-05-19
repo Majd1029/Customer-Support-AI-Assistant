@@ -165,24 +165,22 @@ _FALLBACK: dict[str, dict] = {}   # user_id → row dict
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def register_user(
+def _create_user_internal(
     username: str,
     password: str,
-    email:    str = "",
-    role:     str = "user",
+    email:    str,
+    role:     str,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Returns (token, None) on success or (None, error_string) on failure.
+    """Internal helper that persists a new user with the given role.
 
-    role is 'user' by default. Use create_admin_user() for admin accounts.
-    Callers should never accept role from untrusted user input.
+    Returns (token, None) on success or (None, error_string) on failure.
+    Never call this from untrusted request handlers — use the public functions.
     """
     uname = username.strip()
     if not uname or len(uname) < 2:
         return None, "Username must be at least 2 characters"
     if len(password) < 4:
         return None, "Password must be at least 4 characters"
-    if role not in ("user", "admin"):
-        role = "user"  # silently normalise invalid role
 
     user_id = str(uuid.uuid4())
     ph      = _hash_password(password)
@@ -217,6 +215,23 @@ def register_user(
         }
 
     return _make_token(user_id, uname, em or "", role), None
+
+
+def register_user(
+    username: str,
+    password: str,
+    email:    str = "",
+    role:     str = "user",   # accepted but ALWAYS ignored — see security note
+) -> tuple[Optional[str], Optional[str]]:
+    """Register a new public user account.  Returns (token, None) on success.
+
+    SECURITY: the ``role`` parameter is present only so call sites that
+    previously passed ``role=`` do not raise a TypeError.  It is **always
+    overridden to "user"** — the public registration path can never produce
+    an admin account.  Use :func:`create_admin_user` for server-side admin
+    creation.
+    """
+    return _create_user_internal(username, password, email, role="user")
 
 
 def login_user(username_or_email: str, password: str) -> tuple[Optional[dict], Optional[str]]:
@@ -348,8 +363,14 @@ def create_admin_user(
     password: str,
     email:    str = "",
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Create a user with the 'admin' role. Returns (user_dict, None) or (None, error)."""
-    token, err = register_user(username, password, email, role="admin")
+    """Create a user with the 'admin' role. Returns (user_dict, None) or (None, error).
+
+    This is the only legitimate way to create an admin account — it calls
+    :func:`_create_user_internal` directly, bypassing the public-registration
+    role lock.  Never expose this path to untrusted HTTP input without an
+    existing admin check.
+    """
+    token, err = _create_user_internal(username, password, email, role="admin")
     if err:
         return None, err
     info = verify_token(token)  # type: ignore[arg-type]

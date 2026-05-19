@@ -56,7 +56,9 @@ def _with_retry(fn, *args, retries: int = 3, base_delay: float = 1.0, **kwargs):
                 time.sleep(delay)
             else:
                 logger.error(f"  Qdrant call failed after {retries + 1} attempts: {e}")
-    raise last_exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Qdrant call failed: no attempts made")
 
 # ── Qdrant imports ────────────────────────────────────────────────────────────
 try:
@@ -205,7 +207,7 @@ def ensure_collection(
         },
         sparse_vectors_config={
             SPARSE_VECTOR: _BM25_SPARSE_PARAMS,
-        },
+        } if _BM25_SPARSE_PARAMS is not None else None,
     )
     logger.info(f"  Collection '{name}' created (dense={DENSE_DIM}d + sparse).")
 
@@ -561,7 +563,7 @@ def get_collection_stats(
 
     disk_bytes = None
     try:
-        disk_bytes = info.optimizer_status.optimizations_total   # proxy when full payload unavailable
+        disk_bytes = getattr(info.optimizer_status, "optimizations_total", None)   # proxy when full payload unavailable
     except Exception:
         pass
 
@@ -569,7 +571,7 @@ def get_collection_stats(
         "collection":     collection,
         "exists":         True,
         "points_count":   info.points_count  or 0,
-        "vectors_count":  info.vectors_count or 0,
+        "vectors_count":  getattr(info, "vectors_count", None) or info.indexed_vectors_count or 0,
         "segments_count": info.segments_count if hasattr(info, "segments_count") else None,
         "status":         str(info.status) if info.status else "unknown",
         "disk_bytes":     disk_bytes,
@@ -689,11 +691,13 @@ def create_snapshot(
     """
     _require_qdrant()
     result = client.create_snapshot(collection_name=collection)
+    if result is None:
+        raise RuntimeError(f"Failed to create snapshot for collection '{collection}'")
     logger.info(f"  Snapshot created for '{collection}': {result.name}")
     return {
         "collection":   collection,
         "name":         result.name,
-        "creation_time": str(result.creation_time) if result.creation_time else None,
+        "creation_time": result.creation_time if result.creation_time else None,
         "size":         result.size,
     }
 
@@ -708,7 +712,7 @@ def list_snapshots(
     return [
         {
             "name":          s.name,
-            "creation_time": str(s.creation_time) if s.creation_time else None,
+            "creation_time": s.creation_time if s.creation_time else None,
             "size":          s.size,
         }
         for s in snapshots

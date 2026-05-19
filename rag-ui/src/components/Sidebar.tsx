@@ -229,16 +229,19 @@ export default function Sidebar({
           className="px-3 pt-2 border-t"
           style={{ borderColor: 'var(--border-dark)' }}
         >
-          <button
-            className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors"
-            style={{ color: 'var(--text-muted)' }}
-            onClick={() => setCrawlersPanelOpen(true)}
-            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-          >
-            <FolderOpen size={14} />
-            <span>Data Sources</span>
-          </button>
+          {/* Data Sources — admin only */}
+          {user.role === 'admin' && (
+            <button
+              className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              onClick={() => setCrawlersPanelOpen(true)}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <FolderOpen size={14} />
+              <span>Data Sources</span>
+            </button>
+          )}
           <button
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors"
             style={{ color: 'var(--text-muted)' }}
@@ -263,12 +266,27 @@ export default function Sidebar({
             >
               {user.username.charAt(0)}
             </div>
-            <span
-              className="flex-1 text-sm truncate font-medium"
-              style={{ color: 'var(--text-on-dark)' }}
-            >
-              {user.username}
-            </span>
+            <div className="flex-1 min-w-0 flex items-center gap-1.5">
+              <span
+                className="text-sm truncate font-medium"
+                style={{ color: 'var(--text-on-dark)' }}
+              >
+                {user.username}
+              </span>
+              {user.role === 'admin' && (
+                <span
+                  className="flex-shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'rgba(99,102,241,0.18)',
+                    color: 'var(--accent)',
+                    fontSize: '10px',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  ADMIN
+                </span>
+              )}
+            </div>
             <button
               onClick={onLogout}
               className="p-1.5 rounded-lg transition-colors flex-shrink-0"
@@ -302,8 +320,8 @@ export default function Sidebar({
         />
       )}
 
-      {/* ── Crawlers Panel ─────────────────────────────────────────────────── */}
-      {crawlersPanelOpen && (
+      {/* ── Crawlers Panel — admin only ────────────────────────────────────── */}
+      {crawlersPanelOpen && user.role === 'admin' && (
         <CrawlersPanel onClose={() => setCrawlersPanelOpen(false)} user={user} />
       )}
     </>

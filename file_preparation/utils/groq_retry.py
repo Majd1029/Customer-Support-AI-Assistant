@@ -106,3 +106,5 @@ def call_groq_with_retry(
                 time.sleep(wait)
             else:
                 raise
+
+    raise RuntimeError("Unreachable")

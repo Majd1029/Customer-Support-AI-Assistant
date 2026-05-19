@@ -92,6 +92,7 @@ def _ensure_collection() -> None:
     """Create the user_preferences collection if it doesn't exist yet."""
     if not _available():
         return
+    assert _qdrant_client is not None
     try:
         from qdrant_client.models import (   # type: ignore[import]
             Distance, VectorParams,
@@ -187,6 +188,7 @@ def remember_preference(user_id: str, text: str) -> str:
     """
     if not _available():
         return ""
+    assert _qdrant_client is not None
     text = text.strip()
     if not text:
         return ""
@@ -249,6 +251,7 @@ def recall_preferences(
     """
     if not _available():
         return []
+    assert _qdrant_client is not None
 
     vectors = _embed_query(query)
     if vectors is None:
@@ -310,6 +313,7 @@ def delete_preference(user_id: str, preference_id: str) -> bool:
     """
     if not _available():
         return False
+    assert _qdrant_client is not None
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue  # type: ignore[import]
         _qdrant_client.delete(
@@ -331,6 +335,7 @@ def delete_all_preferences(user_id: str) -> int:
     """
     if not _available():
         return 0
+    assert _qdrant_client is not None
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue  # type: ignore[import]
         # Count first so we can return a meaningful number
@@ -364,6 +369,7 @@ def list_preferences(user_id: str, limit: int = 50) -> list[dict]:
     """
     if not _available():
         return []
+    assert _qdrant_client is not None
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue  # type: ignore[import]
         records, _ = _qdrant_client.scroll(

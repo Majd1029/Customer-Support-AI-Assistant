@@ -177,9 +177,9 @@ def _node_grounding_score(state: ComparisonState) -> dict:
     try:
         if _CONFIDENCE_AVAILABLE and _score_confidence is not None and state["chunks"]:
             stubs = [_ChunkStub(c) for c in state["chunks"]]
-            raw = _score_confidence(state["answer"], stubs, groq_client=_groq_client)
+            raw = _score_confidence(state["answer"], stubs, groq_client=_groq_client)  # type: ignore[arg-type]
             if raw is not None:
-                score = round(float(raw), 4)
+                score = round(raw, 4)
     except Exception as _e:
         logger.warning(f"[EVAL] grounding_score failed: {_e}")
     logger.debug(f"[EVAL] confidence_score={score}")
@@ -228,7 +228,7 @@ def _node_llm_judge(state: ComparisonState) -> dict:
             elif hasattr(jr, "__dict__"):
                 result = jr.__dict__
             else:
-                result = dict(jr)
+                result = dict(jr)  # type: ignore[call-overload]
     except Exception as _e:
         logger.warning(f"[EVAL] llm_judge failed: {_e}")
     return {"judge_result": result}

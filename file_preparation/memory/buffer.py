@@ -181,7 +181,8 @@ class _RedisBackend:
     # ── Ownership ────────────────────────────────────────────────────────────
 
     def _get_owner(self, sid: str) -> str | None:
-        return self._r.get(self._k_owner(sid))
+        res = self._r.get(self._k_owner(sid))
+        return str(res) if res is not None else None
 
     def _set_owner(self, sid: str, user_id: str) -> None:
         self._r.set(self._k_owner(sid), user_id, ex=SESSION_TTL)
@@ -227,7 +228,9 @@ class _RedisBackend:
 
     def _all_turns(self, session_id: str) -> list[Turn]:
         raw = self._r.lrange(self._k_turns(session_id), 0, -1)
-        return [Turn.from_dict(json.loads(r)) for r in raw]
+        if not isinstance(raw, list):
+            raw = []
+        return [Turn.from_dict(json.loads(str(r))) for r in raw]
 
     def read_all_turns(self, session_id: str, user_id: str) -> list[Turn]:
         if not self._check_owner(session_id, user_id):
@@ -246,6 +249,8 @@ class _RedisBackend:
         if not self._check_owner(session_id, user_id):
             raise PermissionError(f"Session {session_id!r} does not belong to {user_id!r}.")
         count = self._r.llen(self._k_turns(session_id))
+        if not isinstance(count, int):
+            count = 0
         pipe = self._r.pipeline()
         pipe.delete(self._k_turns(session_id))
         pipe.delete(self._k_summary(session_id))
@@ -273,7 +278,8 @@ class _RedisBackend:
     def get_summary(self, session_id: str, user_id: str) -> str | None:
         if not self._check_owner(session_id, user_id):
             return None
-        return self._r.get(self._k_summary(session_id))
+        res = self._r.get(self._k_summary(session_id))
+        return str(res) if res is not None else None
 
     # ── Absorb ───────────────────────────────────────────────────────────────
 

@@ -929,12 +929,32 @@ function RecursiveToggle({ checked, onChange }: { checked: boolean; onChange: (v
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0"
-      style={{ background: checked ? 'var(--accent)' : 'rgba(255,255,255,0.12)' }}
+      style={{
+        position:     'relative',
+        width:        '44px',
+        height:       '24px',
+        borderRadius: '9999px',
+        border:       'none',
+        padding:      0,
+        flexShrink:   0,
+        cursor:       'pointer',
+        transition:   'background 0.2s',
+        background:   checked ? 'var(--accent)' : 'rgba(255,255,255,0.15)',
+      }}
     >
       <span
-        className="absolute top-1 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200"
-        style={{ transform: checked ? 'translateX(20px)' : 'translateX(4px)' }}
+        style={{
+          position:     'absolute',
+          top:          '4px',
+          left:         '4px',
+          width:        '16px',
+          height:       '16px',
+          borderRadius: '50%',
+          background:   'white',
+          boxShadow:    '0 1px 3px rgba(0,0,0,0.3)',
+          transition:   'transform 0.2s',
+          transform:    checked ? 'translateX(20px)' : 'translateX(0)',
+        }}
       />
     </button>
   );

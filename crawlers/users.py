@@ -86,6 +86,8 @@ _MEM_LOCK  = threading.Lock()
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _pg_fetch_one(query: str, params: tuple) -> dict | None:
+    if _pg_conn is None:
+        raise RuntimeError("PostgreSQL connection is not initialized.")
     with _pg_lock:
         with _pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(query, params)
@@ -94,6 +96,8 @@ def _pg_fetch_one(query: str, params: tuple) -> dict | None:
 
 
 def _pg_fetch_all(query: str, params: tuple = ()) -> list[dict]:
+    if _pg_conn is None:
+        raise RuntimeError("PostgreSQL connection is not initialized.")
     with _pg_lock:
         with _pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(query, params)
@@ -102,6 +106,8 @@ def _pg_fetch_all(query: str, params: tuple = ()) -> list[dict]:
 
 
 def _pg_execute(query: str, params: tuple) -> None:
+    if _pg_conn is None:
+        raise RuntimeError("PostgreSQL connection is not initialized.")
     with _pg_lock:
         with _pg_conn.cursor() as cur:
             cur.execute(query, params)
@@ -163,7 +169,10 @@ def upsert_user(
                 SET email    = EXCLUDED.email,
                     is_admin = EXCLUDED.is_admin
         """, (user_id, email, admin))
-        return get_user(user_id)
+        user = get_user(user_id)
+        if user is None:
+            raise RuntimeError(f"Failed to retrieve user '{user_id}' after upsert.")
+        return user
 
     record = {
         "id":           user_id,

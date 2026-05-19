@@ -11,4 +11,6 @@ url = (
 engine = create_engine(url)
 with engine.connect() as conn:
     result = conn.execute(text("SELECT version()"))
-    print("✅ Connexion réussie :", result.fetchone()[0])
+    row = result.fetchone()
+    if row is not None:
+        print("✅ Connexion réussie :", row[0])

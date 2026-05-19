@@ -467,7 +467,7 @@ def _parse_docx(path: Path):
                 if not text:
                     continue
                 try:
-                    style_name = para.style.name or ""
+                    style_name = para.style.name if para.style else ""
                 except Exception:
                     style_name = ""
                 lvl = _docx_heading_level(style_name)
@@ -576,10 +576,10 @@ def _parse_docx(path: Path):
                 for elem in doc_root.iter():
                     rid = elem.get(_EMBED_ATTR)
                     if rid and rid in rid_to_target:
-                        path = rid_to_target[rid]
-                        if path not in seen and path in all_names:
-                            seen.add(path)
-                            ordered_media.append(path)
+                        media_path = rid_to_target[rid]
+                        if media_path not in seen and media_path in all_names:
+                            seen.add(media_path)
+                            ordered_media.append(media_path)
 
                 # Append any media files not referenced via r:embed
                 # (e.g. background images, EMF/WMF objects) at the end
@@ -652,7 +652,7 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
     from pypdf.errors import PdfStreamError
     import pdfplumber
 
-    blocks: list[str] = []
+    blocks: list[tuple[int, str]] = []
     tables: list[ExtractedTable] = []
     images: list[ExtractedImage] = []
     doc_metadata: dict = {"file_type": "pdf"}
@@ -807,7 +807,7 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
                         if not _is_real_table(rows):
                             logger.debug(
                                 f"  p{pnum} table {tidx}: skipped (sparse/decorative "
-                                f"{sum(1 for r in rows for c in r if c and str(c).strip())}/"
+                                f"{sum(1 for r in rows for c in r if c and c.strip())}/"
                                 f"{sum(len(r) for r in rows)} cells filled)"
                             )
                             continue
@@ -816,7 +816,7 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
                             page_number=pnum,
                             table_index=tidx,
                             markdown=_rows_to_md(rows),
-                            raw_rows=[[str(c or "") for c in r] for r in rows],
+                            raw_rows=[[c or "" for c in r] for r in rows],
                         ))
                 except Exception as e:
                     logger.warning(f"  pdfplumber tableaux p{pnum}: {e}")
@@ -1292,7 +1292,7 @@ def _parse_eml(path: Path):
     # ── Corps et pièces jointes ───────────────────────────────────────────────
     plain_blocks:   list[str] = []
     html_blocks:    list[str] = []
-    attachments:    list[str] = []
+    attachments:    list[dict[str, Any]] = []
     html_had_tables: bool     = False   # True when HTML body contained ≥1 <table>
 
     def _is_likely_garbage(line: str) -> bool:
@@ -1315,7 +1315,7 @@ def _parse_eml(path: Path):
 
     for part in msg.walk():
         ctype       = part.get_content_type()
-        disposition = str(part.get("Content-Disposition", ""))
+        disposition = part.get("Content-Disposition", "")
         cid         = part.get("Content-ID", "")
         is_inline   = "inline" in disposition or cid
         is_attached = "attachment" in disposition
@@ -1323,7 +1323,7 @@ def _parse_eml(path: Path):
         # Text/plain
         if ctype == "text/plain" and not is_attached:
             payload = part.get_payload(decode=True)
-            if payload:
+            if isinstance(payload, bytes):
                 enc = part.get_content_charset() or "utf-8"
                 text = payload.decode(enc, errors="replace")
                 # ── Normalise line endings ─────────────────────────────────────
@@ -1360,7 +1360,7 @@ def _parse_eml(path: Path):
         # one-cell-per-line table dump that Outlook puts in text/plain).
         elif ctype == "text/html" and not is_attached:
             payload = part.get_payload(decode=True)
-            if payload:
+            if isinstance(payload, bytes):
                 enc = part.get_content_charset() or "utf-8"
                 html = payload.decode(enc, errors="replace")
                 # Extract <table> elements as ExtractedTable before stripping HTML.
@@ -1377,7 +1377,7 @@ def _parse_eml(path: Path):
         # Images inline (CID ou inline disposition)
         elif ctype.startswith("image/") and is_inline:
             payload = part.get_payload(decode=True)
-            if payload:
+            if isinstance(payload, bytes):
                 img = _make_image(payload, page=0, idx=img_idx)
                 if img:
                     images.append(img)
@@ -1400,7 +1400,7 @@ def _parse_eml(path: Path):
             # 20 words ≈ 30 tokens — mirrors _IMG_MIN_OCR_TOKENS in chunker.
             _EML_OCR_MIN_WORDS = 20
 
-            if payload and ext in _EML_CSV_EXTS:
+            if isinstance(payload, bytes) and ext in _EML_CSV_EXTS:
                 # ── CSV/TSV attachment → PostgreSQL import ────────────────────────
                 # Mirror the standalone CSV upload path in api.py:
                 #   1. Write payload to a temp file (import_csv needs a real path)
@@ -1501,7 +1501,7 @@ def _parse_eml(path: Path):
                         try: os.unlink(_tmp_path)
                         except Exception: pass
 
-            elif payload and ext in _DISPATCH:
+            elif isinstance(payload, bytes) and ext in _DISPATCH:
                 tmp_path = None
                 try:
                     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
@@ -1562,7 +1562,7 @@ def _parse_eml(path: Path):
                             os.unlink(tmp_path)
                         except Exception:
                             pass
-            elif payload and ext in _EML_ATT_IMG_EXTS:
+            elif isinstance(payload, bytes) and ext in _EML_ATT_IMG_EXTS:
                 # ── Image attachment — OCR or Groq description ──────────────────
                 # Strategy:
                 #   1. Run OCR (Groq / Llama 4 Scout) on the image bytes.

@@ -94,10 +94,11 @@ export interface Settings {
 
 // ─── Authenticated user ───────────────────────────────────────────────────────
 export interface User {
-  id:       string;   // user_id (UUID for server auth, username.toLowerCase() for legacy)
-  username: string;   // display name (original casing)
-  email?:   string;   // email address (server auth only)
-  token?:   string;   // JWT bearer token (server auth only)
+  id:       string;             // user_id (UUID for server auth, username.toLowerCase() for legacy)
+  username: string;             // display name (original casing)
+  email?:   string;             // email address (server auth only)
+  token?:   string;             // JWT bearer token (server auth only)
+  role?:    'user' | 'admin';   // role from server JWT; undefined = regular user
 }
 
 // ─── Health status ────────────────────────────────────────────────────────────

@@ -1,25 +1,50 @@
-import sys
-import os
-import warnings
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+"""
+csv_executer.py — Natural-language CSV query engine.
 
-import json
-import re
-import hashlib
+Pipeline
+--------
+  1. ``import_csv(path)``          → registers metadata; does NOT permanently
+                                     store rows in PostgreSQL.
+  2. ``query_table(name, q)``      → loads the CSV into a TEMP table for this
+                                     request, runs sandboxed pandas code, then
+                                     drops the temp table automatically.
+  3. ``query_csv(path, q)``        → convenience wrapper (import + query).
+  4. ``query_auto(q)``             → auto-detects which registered CSV the
+                                     question refers to and calls query_table.
+
+Key design change (v2):
+  Rows are no longer stored permanently in PostgreSQL.  Only the file registry
+  (_csv_registry) and metadata are kept.  Every query session uses
+  ``CsvQuerySession`` from csv_session.py which creates a temp table,
+  executes the query, and drops the table — regardless of success or failure.
+  This dramatically reduces PG storage and eliminates stale data.
+"""
+
+from __future__ import annotations
+
 import builtins
+import hashlib
+import json
+import os
+import re
+import warnings
+from datetime import datetime, timezone
+from pathlib import Path
+
 import chardet
 import pandas as pd
-from dotenv import load_dotenv
-from datetime import datetime, timezone
-load_dotenv()
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
-from pathlib import Path
+from dotenv import load_dotenv
 from groq import Groq
-from sqlalchemy import create_engine, text, inspect
+from loguru import logger
+from sqlalchemy import create_engine, inspect, text
 from RestrictedPython import compile_restricted
 from RestrictedPython.Guards import guarded_iter_unpack_sequence, safer_getattr
 from RestrictedPython.PrintCollector import PrintCollector
+
+load_dotenv()
 
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -32,7 +57,7 @@ PG_HOST     = os.environ.get("PG_HOST",     "localhost")
 PG_PORT     = os.environ.get("PG_PORT",     "5432")
 PG_DB       = os.environ.get("PG_DB",       "csvstore")
 PG_USER     = os.environ.get("PG_USER",     "csvuser")
-PG_PASSWORD = os.environ.get("PG_PASSWORD", "yourpassword")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "")   # empty string — override via .env
 
 DATABASE_URL = (
     f"postgresql+psycopg2://{PG_USER}:{PG_PASSWORD}"
@@ -55,43 +80,107 @@ def get_engine():
 def _ensure_registry():
     """
     Create the _csv_registry table if it doesn't exist.
-    Tracks MD5 hash of each imported CSV to detect updates.
+
+    v2: The registry now also stores the original file_path and column/row
+    metadata so we can reconstruct df_info for code generation without loading
+    the full CSV into memory.
     """
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS _csv_registry (
                 table_name  TEXT PRIMARY KEY,
+                file_path   TEXT,
                 file_hash   TEXT NOT NULL,
+                total_rows  INTEGER,
+                columns_json TEXT,
+                dtypes_json  TEXT,
+                sample_json  TEXT,
                 imported_at TIMESTAMP NOT NULL
             )
         """))
+        # Migration: add new columns if they don't exist yet (idempotent)
+        for col_def in [
+            "file_path   TEXT",
+            "total_rows  INTEGER",
+            "columns_json TEXT",
+            "dtypes_json  TEXT",
+            "sample_json  TEXT",
+        ]:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE _csv_registry ADD COLUMN IF NOT EXISTS {col_def}"
+                ))
+            except Exception:
+                pass  # column already exists
 
 
-def _get_stored_hash(table_name: str) -> str | None:
-    """Return the stored MD5 hash for a table, or None if not registered."""
+def _get_registry_row(table_name: str) -> dict | None:
+    """Return the full registry row for a table, or None if not registered."""
     _ensure_registry()
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT file_hash FROM _csv_registry WHERE table_name = :t"),
-            {"t": table_name}
+            text(
+                "SELECT file_path, file_hash, total_rows, columns_json, "
+                "dtypes_json, sample_json FROM _csv_registry WHERE table_name = :t"
+            ),
+            {"t": table_name},
         ).fetchone()
-    return row[0] if row else None
+    if not row:
+        return None
+    return {
+        "file_path":    row[0],
+        "file_hash":    row[1],
+        "total_rows":   row[2],
+        "columns":      json.loads(row[3]) if row[3] else [],
+        "dtypes":       json.loads(row[4]) if row[4] else {},
+        "sample":       json.loads(row[5]) if row[5] else [],
+    }
 
 
-def _save_hash(table_name: str, file_hash: str):
-    """Insert or update the hash for a table in the registry."""
+def _get_stored_hash(table_name: str) -> str | None:
+    """Return the stored MD5 hash for a table, or None if not registered."""
+    row = _get_registry_row(table_name)
+    return row["file_hash"] if row else None
+
+
+def _save_registry(
+    table_name:   str,
+    file_path:    str,
+    file_hash:    str,
+    total_rows:   int,
+    columns:      list,
+    dtypes:       dict,
+    sample:       list,
+) -> None:
+    """Upsert a registry entry — no rows are stored, only metadata."""
     _ensure_registry()
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text("""
-            INSERT INTO _csv_registry (table_name, file_hash, imported_at)
-            VALUES (:t, :h, :ts)
+            INSERT INTO _csv_registry
+                (table_name, file_path, file_hash, total_rows,
+                 columns_json, dtypes_json, sample_json, imported_at)
+            VALUES (:t, :fp, :h, :rows, :cols, :dtypes, :sample, :ts)
             ON CONFLICT (table_name) DO UPDATE
-                SET file_hash   = EXCLUDED.file_hash,
-                    imported_at = EXCLUDED.imported_at
-        """), {"t": table_name, "h": file_hash, "ts": datetime.now(timezone.utc)})
+                SET file_path    = EXCLUDED.file_path,
+                    file_hash    = EXCLUDED.file_hash,
+                    total_rows   = EXCLUDED.total_rows,
+                    columns_json = EXCLUDED.columns_json,
+                    dtypes_json  = EXCLUDED.dtypes_json,
+                    sample_json  = EXCLUDED.sample_json,
+                    imported_at  = EXCLUDED.imported_at
+        """), {
+            "t":      table_name,
+            "fp":     file_path,
+            "h":      file_hash,
+            "rows":   total_rows,
+            "cols":   json.dumps(columns),
+            "dtypes": json.dumps(dtypes),
+            "sample": json.dumps(sample, default=str),
+            "ts":     datetime.now(timezone.utc),
+        })
 
 
 def _compute_hash(file_path: str) -> str:
@@ -115,58 +204,59 @@ def _slugify(name: str) -> str:
     return name
 
 
-def import_csv(file_path: str, table_name: str = None, force: bool = False) -> str:
+def import_csv(file_path: str, table_name: str | None = None, force: bool = False) -> str:
     """
-    Load a CSV into PostgreSQL — only if new or changed.
+    Register a CSV file — metadata only, no permanent row storage.
 
-    Logic:
-        - Table doesn't exist          -> import
-        - File hash changed            -> reimport (CSV was updated)
-        - Table exists & hash matches  -> skip
-        - force=True                   -> always reimport
+    v2 change: rows are no longer imported into PostgreSQL permanently.
+    Only the schema, column types, sample rows and file hash are stored in
+    the ``_csv_registry`` table.  Actual data loading happens on-demand in
+    ``query_table()`` via ``CsvQuerySession``.
 
     Args:
         file_path  : Path to the CSV file.
-        table_name : Postgres table name (auto-derived from filename if None).
-        force      : If True, always reimport regardless of hash.
+        table_name : Logical name for this dataset (auto-derived from filename
+                     if None).
+        force      : If True, refresh metadata even if the file hash matches.
 
     Returns:
-        The table name used.
+        The table name (logical dataset identifier).
     """
-    file_path  = str(file_path)
+    from csv_query_engine.csv_chunker import _slugify_columns
+
     table_name = table_name or _slugify(file_path)
 
     current_hash = _compute_hash(file_path)
     stored_hash  = _get_stored_hash(table_name)
-    table_exists = table_name in list_tables()
 
-    # ── Decide whether to import ──────────────────────────────────────────────
-    if not force:
-        if table_exists and stored_hash == current_hash:
-            print(f"[IMPORT] Skipped  '{file_path}' — no changes detected.")
-            return table_name
-        elif table_exists and stored_hash != current_hash:
-            print(f"[IMPORT] Updated  '{file_path}' — file has changed, reimporting...")
-        else:
-            print(f"[IMPORT] New file '{file_path}' — importing for the first time...")
+    if not force and stored_hash == current_hash:
+        logger.debug(f"[IMPORT] Skipped '{file_path}' — metadata already up to date.")
+        return table_name
 
-    # ── Import ────────────────────────────────────────────────────────────────
+    # Read only the header + a small sample to build metadata
     with open(file_path, "rb") as f:
-        encoding = chardet.detect(f.read(50_000)).get("encoding") or "utf-8"
+        encoding = chardet.detect(f.read(65_536)).get("encoding") or "utf-8"
 
-    df = pd.read_csv(file_path, encoding=encoding)
+    # Full read for stats (avoids loading twice for large files)
+    df = pd.read_csv(file_path, encoding=encoding, low_memory=False, on_bad_lines="skip")
+    df = _slugify_columns(df)
 
-    df.columns = [
-        re.sub(r"[^a-z0-9]+", "", col.lower()).strip("")
-        for col in df.columns
-    ]
+    columns    = df.columns.tolist()
+    dtypes     = {col: str(df[col].dtype) for col in columns}
+    sample     = df.head(5).to_dict(orient="records")
+    total_rows = len(df)
 
-    engine = get_engine()
-    df.to_sql(table_name, engine, if_exists="replace", index=False)
+    _save_registry(
+        table_name=table_name,
+        file_path=file_path,
+        file_hash=current_hash,
+        total_rows=total_rows,
+        columns=columns,
+        dtypes=dtypes,
+        sample=sample,
+    )
 
-    _save_hash(table_name, current_hash)
-
-    print(f"[IMPORT] Done     '{table_name}' ({len(df)} rows, {len(df.columns)} cols)")
+    logger.info(f"[IMPORT] Registered '{table_name}' ({total_rows} rows, {len(columns)} cols)")
     return table_name
 
 
@@ -221,39 +311,40 @@ def show_registry():
 # ── TABLE HELPERS ─────────────────────────────────────────────────────────────
 
 def list_tables() -> list[str]:
-    """Return all user table names (excluding internal _csv_registry table)."""
-    engine = get_engine()
-    inspector = inspect(engine)
-    return [t for t in inspector.get_table_names() if t != "_csv_registry"]
+    """
+    Return all registered dataset names from the metadata registry.
+
+    v2: No longer reads PostgreSQL table list (rows are not permanently stored).
+    Returns logical dataset names from _csv_registry instead.
+    """
+    try:
+        _ensure_registry()
+        engine = get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT table_name FROM _csv_registry ORDER BY table_name")
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
 
 
 def get_table_info(table_name: str) -> dict:
-    """Return schema + 3 sample rows for a given table."""
-    engine = get_engine()
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            text(f'SELECT * FROM "{table_name}" LIMIT 3'),
-            conn
-        )
-        count_row = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{table_name}"')
-        ).fetchone()
-        total_rows = count_row[0]
+    """
+    Return schema metadata for a registered dataset.
 
+    v2: Reads from _csv_registry (metadata only). No actual data rows in PG.
+    """
+    row = _get_registry_row(table_name)
+    if not row:
+        raise ValueError(f"Dataset '{table_name}' is not registered. Upload the CSV first.")
     return {
-        "table"  : table_name,
-        "shape"  : (total_rows, len(df.columns)),
-        "columns": df.columns.tolist(),
-        "dtypes" : {col: str(dt) for col, dt in df.dtypes.items()},
-        "sample" : df.to_dict(orient="records"),
+        "table":   table_name,
+        "shape":   (row["total_rows"] or 0, len(row["columns"])),
+        "columns": row["columns"],
+        "dtypes":  row["dtypes"],
+        "sample":  row["sample"],
     }
-
-
-def load_table(table_name: str) -> pd.DataFrame:
-    """Load an entire table from PostgreSQL into a pandas DataFrame."""
-    engine = get_engine()
-    with engine.connect() as conn:
-        return pd.read_sql(text(f'SELECT * FROM "{table_name}"'), conn)
 
 
 # ── TABLE AUTO-DETECTOR ───────────────────────────────────────────────────────
@@ -297,7 +388,10 @@ def detect_table(question: str) -> str | None:
         temperature = 0.0,
     )
 
-    answer = response.choices[0].message.content.strip().strip('"').strip("'")
+    content = response.choices[0].message.content
+    if content is None:
+        return None
+    answer = content.strip().strip('"').strip("'")
 
     if answer.lower() == "null" or answer not in tables:
         return None
@@ -356,7 +450,7 @@ def execute_code(code: str, df: pd.DataFrame) -> dict:
         return {"success": False, "output": "", "result": None, "error": f"{type(e).__name__}: {e}"}
 
     captured = local_vars.get("_print", None)
-    output   = captured() if callable(captured) else ""
+    output   = str(captured()) if callable(captured) else ""
 
     return {
         "success": True,
@@ -401,7 +495,8 @@ Rules:
         temperature = 0.0,
     )
 
-    code = response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    code = content.strip() if content is not None else ""
 
     if code.startswith("```"):
         lines = code.split("\n")
@@ -437,95 +532,137 @@ def generate_answer(question: str, code: str, execution: dict) -> str:
         temperature = 0.3,
     )
 
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else ""
 
 
 # ── MAIN PIPELINE ─────────────────────────────────────────────────────────────
 
-def query_table(table_name: str, question: str, verbose: bool = True) -> dict:
+def query_table(table_name: str, question: str, verbose: bool = False) -> dict:
     """
-    Full pipeline: PostgreSQL table + natural language question -> answer.
-    """
-    if verbose:
-        print(f"\n[EXECUTOR] Table   : {table_name}")
-        print(f"[EXECUTOR] Model   : {GROQ_VISION_MODEL}")
-        print(f"[EXECUTOR] Question: {question}")
+    Full pipeline: registered CSV dataset + natural-language question → answer.
 
+    v2: Uses ``CsvQuerySession`` to load data into a temporary PostgreSQL table
+    just-in-time.  The temp table is automatically dropped after each call —
+    regardless of success or failure — so no permanent row storage accumulates.
+
+    Parameters
+    ----------
+    table_name:
+        Logical dataset name (registered via ``import_csv()``).
+    question:
+        Natural-language question about the dataset.
+    verbose:
+        Print progress messages to stdout.
+
+    Returns
+    -------
+    dict with keys: question, table, code, execution, answer
+    """
+    from csv_query_engine.csv_session import CsvQuerySession
+
+    if verbose:
+        logger.info(f"[EXECUTOR] Table   : {table_name}")
+        logger.info(f"[EXECUTOR] Question: {question}")
+
+    # ── Step 1: Fetch metadata from registry (no data loaded yet) ─────────────
     df_info = get_table_info(table_name)
+    reg_row = _get_registry_row(table_name)
+    if not reg_row or not reg_row.get("file_path"):
+        return {
+            "question":  question,
+            "table":     table_name,
+            "code":      None,
+            "execution": {"success": False, "output": "", "result": None,
+                          "error": f"No file path registered for '{table_name}'. Re-upload the CSV."},
+            "answer":    f"Dataset '{table_name}' source file is not available.",
+        }
+
+    file_path = reg_row["file_path"]
+    if not Path(file_path).exists():
+        return {
+            "question":  question,
+            "table":     table_name,
+            "code":      None,
+            "execution": {"success": False, "output": "", "result": None,
+                          "error": f"Source file not found: {file_path}"},
+            "answer":    f"The original CSV file for '{table_name}' is no longer available. Please re-upload it.",
+        }
 
     if verbose:
-        print(f"[EXECUTOR] Shape   : {df_info['shape'][0]} rows x {df_info['shape'][1]} cols")
-        print(f"[EXECUTOR] Generating code...")
+        logger.info(
+            f"[EXECUTOR] Shape   : {df_info['shape'][0]} rows × {df_info['shape'][1]} cols"
+        )
 
+    # ── Step 2: Generate pandas code using metadata (no data loaded yet) ──────
     code = generate_pandas_code(question, df_info)
-
     if verbose:
-        print(f"[EXECUTOR] Code:\n{'─'*50}\n{code}\n{'─'*50}")
-        print(f"[EXECUTOR] Loading table from Postgres...")
+        logger.debug(f"[EXECUTOR] Code:\n{code}")
 
-    df = load_table(table_name)
+    # ── Step 3: Load data into temp table, execute, then auto-cleanup ─────────
+    import uuid as _uuid
+    session_id = _uuid.uuid4().hex[:16]
 
-    if verbose:
-        print(f"[EXECUTOR] Running in sandbox...")
-
-    execution = execute_code(code, df)
+    with CsvQuerySession(file_path, session_id=session_id) as sess:
+        df        = sess.load_as_dataframe()
+        execution = execute_code(code, df)
 
     if verbose:
         if execution["success"]:
-            print(f"[EXECUTOR] Result  : {execution['result']}")
+            logger.info(f"[EXECUTOR] Result  : {execution['result']}")
         else:
-            print(f"[EXECUTOR] Error   : {execution['error']}")
+            logger.warning(f"[EXECUTOR] Error   : {execution['error']}")
 
+    # ── Step 4: Generate natural-language answer ───────────────────────────────
     answer = generate_answer(question, code, execution)
 
     if verbose:
-        print(f"[EXECUTOR] Answer  : {answer}")
+        logger.info(f"[EXECUTOR] Answer  : {answer}")
 
     return {
-        "question" : question,
-        "table"    : table_name,
-        "code"     : code,
+        "question":  question,
+        "table":     table_name,
+        "code":      code,
         "execution": execution,
-        "answer"   : answer,
+        "answer":    answer,
     }
 
 
-def query_auto(question: str, verbose: bool = True) -> dict:
+def query_auto(question: str, verbose: bool = False) -> dict:
     """
     Full pipeline with automatic table detection.
-    The user doesn't need to specify the table name — the LLM picks it.
 
-    Returns same dict as query_table(), plus 'table' key showing which was used.
+    Asks the LLM to identify which registered dataset matches the question,
+    then runs ``query_table()``.
     """
     if verbose:
-        print(f"\n[ROUTER] Detecting table for question: \"{question}\"")
+        logger.info(f"[ROUTER] Detecting table for: \"{question}\"")
 
     table = detect_table(question)
 
     if table is None:
-        if verbose:
-            print(f"[ROUTER] Could not determine table. Available: {list_tables()}")
         return {
-            "question" : question,
-            "table"    : None,
-            "code"     : None,
+            "question":  question,
+            "table":     None,
+            "code":      None,
             "execution": None,
-            "answer"   : (
+            "answer":    (
                 "I could not determine which dataset your question refers to. "
                 f"Available tables: {list_tables()}"
             ),
         }
 
     if verbose:
-        print(f"[ROUTER] Table detected: '{table}'")
+        logger.info(f"[ROUTER] Table detected: '{table}'")
 
     return query_table(table, question, verbose)
 
 
-def query_csv(file_path: str, question: str, verbose: bool = True) -> dict:
+def query_csv(file_path: str, question: str, verbose: bool = False) -> dict:
     """
-    Convenience wrapper: auto-imports/updates CSV in Postgres if needed,
-    then runs query_table() on it.
+    Convenience: register (or refresh) a CSV file and immediately query it.
+
+    Equivalent to ``import_csv(path); query_table(name, question)``.
     """
     table_name = import_csv(file_path)
     return query_table(table_name, question, verbose)
