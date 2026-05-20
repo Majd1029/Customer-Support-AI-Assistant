@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Message, Session, Settings, Source, EvalState, JudgeResult, ScopeState, MessageMetadata } from '../types';
+import { friendlyFetchError, friendlyError } from '../utils/errors';
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -344,11 +345,11 @@ export function useChat(userId: string, userToken: string = '', onAuthError?: ()
         });
 
         if (!response.ok) {
-          const errText = await response.text().catch(() => `HTTP ${response.status}`);
+          const msg = await friendlyFetchError(response);
           updateMessage(assistantId, m => ({
             ...m,
             streaming: false,
-            error: `Server error ${response.status}: ${errText}`,
+            error: msg,
           }));
           return;
         }
@@ -480,10 +481,11 @@ export function useChat(userId: string, userToken: string = '', onAuthError?: ()
 
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
+          const msg = friendlyError(0, (err as Error).message || '');
           updateMessage(assistantId, m => ({
             ...m,
             streaming: false,
-            error: (err as Error).message || 'Connection failed',
+            error: msg || '⚠️ Could not reach the server. Check your connection and try again.',
           }));
         }
       } finally {

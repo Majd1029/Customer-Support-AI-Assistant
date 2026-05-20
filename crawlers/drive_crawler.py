@@ -395,6 +395,7 @@ def iter_files(
     recursive:      bool,
     max_results:    int,
     incremental:    bool = True,
+    on_skip:        "callable | None" = None,
 ) -> Iterator[tuple[str, bytes, dict]]:
     """
     Yield (filename, content_bytes, file_meta) for each Drive file that should
@@ -437,6 +438,11 @@ def iter_files(
                         f"(modifiedTime={modified_time})"
                     )
                     skipped += 1
+                    if on_skip is not None:
+                        try:
+                            on_skip(name)
+                        except Exception:
+                            pass
                     continue  # ← never download
 
                 # File changed — detect rename

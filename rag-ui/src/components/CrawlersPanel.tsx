@@ -5,6 +5,7 @@ import {
   Globe, Users, Lock,
 } from 'lucide-react';
 import type { User } from '../types';
+import { friendlyFetchError, friendlyError } from '../utils/errors';
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
 const POLL_INTERVAL_MS = 2000;
@@ -54,6 +55,7 @@ export default function CrawlersPanel({
   const [historyLoading, setHistoryLoading] = useState(true);
   const [driveFiles, setDriveFiles]         = useState<DriveFile[]>([]);
   const [driveFilesLoading, setDriveFilesLoading] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const stoppedRef = useRef(false);
 
@@ -96,7 +98,9 @@ export default function CrawlersPanel({
       if (stoppedRef.current) return;
 
       try {
-        const r = await fetch(`${API_URL}/crawl/status/${activeJob.job_id}`);
+        const r = await fetch(`${API_URL}/crawl/status/${activeJob.job_id}`, {
+          headers: user.token ? { Authorization: `Bearer ${user.token}` } : {},
+        });
 
         // Guard again — we may have been stopped while the fetch was in-flight
         if (stoppedRef.current) return;
@@ -126,10 +130,15 @@ export default function CrawlersPanel({
     return stop;
   }, [activeJob?.job_id, activeJob?.status]);
 
+  const authHeaders = (): Record<string, string> =>
+    user.token ? { Authorization: `Bearer ${user.token}` } : {};
+
   async function fetchHistory() {
     setHistoryLoading(true);
     try {
-      const r = await fetch(`${API_URL}/crawl/history?limit=20`);
+      const r = await fetch(`${API_URL}/crawl/history?limit=20`, {
+        headers: authHeaders(),
+      });
       if (r.ok) {
         const d = await r.json();
         setHistory(d.runs ?? []);
@@ -142,7 +151,10 @@ export default function CrawlersPanel({
     if (!email) return;
     setDriveFilesLoading(true);
     try {
-      const r = await fetch(`${API_URL}/drive/files?owner_email=${encodeURIComponent(email)}&limit=200`);
+      const r = await fetch(
+        `${API_URL}/drive/files?owner_email=${encodeURIComponent(email)}&limit=200`,
+        { headers: authHeaders() },
+      );
       if (r.ok) {
         const d = await r.json();
         setDriveFiles(d.files ?? []);
@@ -152,15 +164,16 @@ export default function CrawlersPanel({
   }
 
   async function startCrawl(source: 'gmail' | 'drive', body: Record<string, unknown>) {
+    setStartError(null);
     try {
       const r = await fetch(`${API_URL}/crawl/${source}`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body:    JSON.stringify(body),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => ({ detail: r.statusText }));
-        alert(`Failed to start crawl: ${err.detail ?? r.statusText}`);
+        const msg = await friendlyFetchError(r);
+        setStartError(msg);
         return;
       }
       const data = await r.json();
@@ -176,7 +189,7 @@ export default function CrawlersPanel({
         config:      body,
       });
     } catch (e) {
-      alert(`Network error: ${e}`);
+      setStartError(friendlyError(0, (e as Error).message || '') || '⚠️ Could not reach the server. Check your connection.');
     }
   }
 
@@ -202,11 +215,11 @@ export default function CrawlersPanel({
             </span>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.07)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            className="p-1.5 rounded-lg transition-colors text-[var(--text-muted)] hover:bg-[rgba(255,255,255,0.07)]"
+            title="Close data sources panel"
+            aria-label="Close data sources panel"
           >
             <X size={16} />
           </button>
@@ -250,24 +263,29 @@ export default function CrawlersPanel({
             {tab === 'gmail'
               ? (
                 <GmailForm
-                  onStart={body => startCrawl('gmail', {
+                  onStart={body => { setStartError(null); startCrawl('gmail', {
                     ...body,
                     user_id:    user.id,
                     user_email: googleEmail,
-                  })}
+                  }); }}
                   disabled={activeJob?.status === 'running'}
                 />
               ) : (
                 <DriveForm
-                  onStart={body => startCrawl('drive', {
+                  onStart={body => { setStartError(null); startCrawl('drive', {
                     ...body,
                     user_id:    user.id,
                     user_email: googleEmail,
-                  })}
+                  }); }}
                   disabled={activeJob?.status === 'running'}
                 />
               )
             }
+            {startError && (
+              <p style={{ color: 'var(--danger, #ef4444)', fontSize: '0.85rem', marginTop: '0.5rem', padding: '0.5rem 0.75rem', background: 'rgba(239,68,68,0.08)', borderRadius: '6px' }}>
+                {startError}
+              </p>
+            )}
           </div>
 
           {/* ── History ───────────────────────────────────────────────────── */}
@@ -567,6 +585,7 @@ function DriveForm({
 }) {
   const [folderId,      setFolderId]      = useState('');
   const [recursive,     setRecursive]     = useState(false);
+  const [incremental,   setIncremental]   = useState(true);   // skip unchanged files by default
   const [modifiedAfter, setModifiedAfter] = useState('');
   const [types,         setTypes]         = useState('');
   const [maxResults,    setMaxResults]    = useState(200);
@@ -577,6 +596,7 @@ function DriveForm({
     onStart({
       folder_id:      folderId || null,
       recursive,
+      incremental,
       modified_after: modifiedAfter || null,
       types:          types ? types.split(',').map(t => t.trim()).filter(Boolean) : null,
       max_results:    maxResults,
@@ -602,6 +622,14 @@ function DriveForm({
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Include sub-folders</p>
         </div>
         <RecursiveToggle checked={recursive} onChange={setRecursive} />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm" style={{ color: 'var(--text-on-dark)' }}>Incremental</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Skip unchanged files</p>
+        </div>
+        <RecursiveToggle checked={incremental} onChange={setIncremental} />
       </div>
 
       {/* Advanced toggle */}
@@ -729,7 +757,10 @@ function HistoryRow({ run }: { run: CrawlJob }) {
           {statusIcon}
         </div>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {run.indexed} indexed · {run.errors} errors · {date}
+          {run.indexed} indexed
+          {run.skipped > 0 && <span className="ml-1">· {run.skipped} skipped</span>}
+          {run.errors  > 0 && <span className="ml-1" style={{ color: 'var(--danger, #ef4444)' }}>· {run.errors} errors</span>}
+          <span className="ml-1">· {date}</span>
           {owner && <span className="ml-1 opacity-60">· {owner}</span>}
         </p>
         {run.error && (

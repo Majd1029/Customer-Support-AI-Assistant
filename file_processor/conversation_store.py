@@ -256,6 +256,15 @@ def save_messages(session_id: str, user_id: str, messages: list[dict]) -> bool:
         s = _SESSIONS.get(session_id)
         if s and s["user_id"] != user_id:
             return False
+        # Upsert session row — mirrors the PG INSERT…ON CONFLICT behaviour so
+        # that load_messages() can find the session even when it was never
+        # explicitly created via create_or_touch_session().
+        if not s:
+            _SESSIONS[session_id] = {
+                "session_id": session_id, "user_id": user_id, "label": "Chat",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }
         _MESSAGES[session_id] = list(messages)
         return True
 

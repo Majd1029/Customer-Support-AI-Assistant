@@ -690,22 +690,13 @@ async def health():
         except Exception as e:
             return {"status": "down", "error": str(e)}
 
-    async def check_openrouter() -> dict:
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
+    async def check_groq_ocr() -> dict:
+        api_key = os.getenv("GROQ_OCR_API_KEY") or os.getenv("GROQ_API_KEY", "")
         if not api_key:
-            return {"status": "down", "error": "OPENROUTER_API_KEY not set"}
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            if r.status_code == 200:
-                ocr_model = os.getenv("OPENROUTER_OCR_MODEL", "baidu/qianfan-ocr-fast:free")
-                return {"status": "ok", "ocr_model": ocr_model}
-            return {"status": "down", "error": f"HTTP {r.status_code}"}
-        except Exception as e:
-            return {"status": "down", "error": str(e)}
+            return {"status": "down", "error": "GROQ_OCR_API_KEY not set"}
+        ocr_model = os.getenv("GROQ_OCR_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+        # Key presence is sufficient — Groq connectivity is already tested by check_groq()
+        return {"status": "ok", "ocr_model": ocr_model}
 
     # Run all checks in parallel — total latency = slowest single check
     results = await asyncio.gather(
@@ -713,24 +704,24 @@ async def health():
         check_postgres(),
         check_ollama(),
         check_groq(),
-        check_openrouter(),
+        check_groq_ocr(),
         return_exceptions=True,
     )
 
     services = {
-        "qdrant":      results[0] if not isinstance(results[0], BaseException) else {"status": "down", "error": str(results[0])},
-        "postgres":    results[1] if not isinstance(results[1], BaseException) else {"status": "down", "error": str(results[1])},
-        "ollama":      results[2] if not isinstance(results[2], BaseException) else {"status": "down", "error": str(results[2])},
-        "groq":        results[3] if not isinstance(results[3], BaseException) else {"status": "down", "error": str(results[3])},
-        "openrouter":  results[4] if not isinstance(results[4], BaseException) else {"status": "down", "error": str(results[4])},
+        "qdrant":    results[0] if not isinstance(results[0], BaseException) else {"status": "down", "error": str(results[0])},
+        "postgres":  results[1] if not isinstance(results[1], BaseException) else {"status": "down", "error": str(results[1])},
+        "ollama":    results[2] if not isinstance(results[2], BaseException) else {"status": "down", "error": str(results[2])},
+        "groq":      results[3] if not isinstance(results[3], BaseException) else {"status": "down", "error": str(results[3])},
+        "groq_ocr":  results[4] if not isinstance(results[4], BaseException) else {"status": "down", "error": str(results[4])},
     }
 
     impact = {
-        "qdrant":     "search and indexing unavailable — /search, /index, /ask return 503",
-        "postgres":   "CSV queries and user facts unavailable — /query, /user-facts return 503",
-        "ollama":     "answer generation and OCR fallback unavailable — /ask, /ask/stream, and scanned-PDF upload degraded",
-        "groq":       "HyDE, query rewriting, judge, summariser degraded — fallbacks active",
-        "openrouter": "primary OCR unavailable — falling back to Ollama/Gemma4 for scanned documents",
+        "qdrant":    "search and indexing unavailable — /search, /index, /ask return 503",
+        "postgres":  "CSV queries and user facts unavailable — /query, /user-facts return 503",
+        "ollama":    "answer generation and OCR fallback unavailable — /ask, /ask/stream, and scanned-PDF upload degraded",
+        "groq":      "HyDE, query rewriting, judge, summariser degraded — fallbacks active",
+        "groq_ocr":  "primary OCR unavailable (GROQ_OCR_API_KEY not set) — falling back to Ollama/Gemma4 for scanned documents",
     }
 
     degraded = [k for k, v in services.items() if v.get("status") != "ok"]
@@ -1317,6 +1308,16 @@ async def query_csv(req: QueryRequest):
                 "CSV query engine is not available. "
                 "Check that PostgreSQL is running and GROQ_API_KEY is set."
             ),
+        )
+
+    # Reject an explicitly empty table name — callers must omit the field (or
+    # pass null) to trigger auto-detection.  An empty string almost always means
+    # a client bug; surfacing 400 is more helpful than silently running the
+    # auto-detect path and returning a confusing answer.
+    if req.table is not None and not req.table.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="table name cannot be empty; omit the field or pass null to auto-detect",
         )
 
     try:
@@ -2533,6 +2534,9 @@ async def ask(
     try:
         result = _answer_gen.generate(retrieval_question, gen_chunks, cfg, history=_gen_history)
     except Exception as e:
+        _err_s = str(e)
+        if "429" in _err_s or "rate_limit_exceeded" in _err_s or "tokens per day" in _err_s.lower() or "tokens per minute" in _err_s.lower():
+            raise HTTPException(status_code=429, detail="Daily AI usage limit reached. Please try again in a few minutes, or tomorrow when the quota resets.")
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
 
     # Wire retrieval timing into the result for unified reporting
@@ -2904,7 +2908,15 @@ async def ask_stream(
                     answer_parts.append(token)
                     yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
         except Exception as e:
-            err_token = f"[Generation error: {e}]"
+            _err_str = str(e)
+            if "429" in _err_str or "rate_limit_exceeded" in _err_str or "tokens per day" in _err_str.lower() or "tokens per minute" in _err_str.lower():
+                err_token = "⚠️ Daily AI usage limit reached. Please try again in a few minutes, or tomorrow when the quota resets."
+            elif "401" in _err_str or "invalid_api_key" in _err_str.lower():
+                err_token = "⚠️ AI service authentication error. Please contact the administrator."
+            elif "503" in _err_str or "unavailable" in _err_str.lower():
+                err_token = "⚠️ AI service is temporarily unavailable. Please try again in a moment."
+            else:
+                err_token = f"[Generation error: {e}]"
             answer_parts.append(err_token)
             yield f"data: {json.dumps({'type': 'token', 'content': err_token})}\n\n"
         generation_ms = round((_time.monotonic() - _t_gen) * 1000, 1)
@@ -3445,6 +3457,7 @@ class DriveCrawlRequest(BaseModel):
     types:          list[str] | None  = None   # ["pdf", "docx", ...]
     modified_after: str | None        = None   # YYYY-MM-DD
     recursive:      bool              = True   # default True — traverses sub-folders automatically
+    incremental:    bool              = True   # skip unchanged files (compare Drive modifiedTime)
     max_results:    int               = 200
     # Owner identity — same as GmailCrawlRequest above.
     user_id:    str = ""
@@ -3462,10 +3475,23 @@ def _run_crawler(job_id: str, source: str, kwargs: dict) -> None:
     (web OAuth flow), that token is used to build the service object.
     Otherwise falls back to the desktop credentials.json / token.json flow.
     """
+    import time as _time
+
     api_url    = f"http://localhost:{os.environ.get('PORT', '8000')}"
     api_key    = os.environ.get("API_KEY", "")
+    # Delay (seconds) between consecutive file uploads.  The async upload
+    # worker pool (max 3) starts OCR/captioning immediately after each POST,
+    # so submitting 78 files back-to-back saturates Windows' TCP socket
+    # buffer pool (WinError 10055).  A 5-second gap ensures at most a few
+    # uploads are actively processing at once.
+    _INTER_FILE_DELAY = 5.0
     user_id    = kwargs.get("user_id",    "")
     user_email = kwargs.get("user_email", "")
+    # Crawl jobs are admin-only — always feed the global knowledge base so
+    # all users can query the crawled content.  The background thread does
+    # not send a JWT, so the RBAC owner_id resolution in /upload would not
+    # fire; we set it explicitly here instead.
+    _crawl_owner_id = "__global__"
 
     # ── Resolve OAuth service ─────────────────────────────────────────────────
     def _build_gmail_service():
@@ -3502,7 +3528,7 @@ def _run_crawler(job_id: str, source: str, kwargs: dict) -> None:
             for slug, eml_bytes in iter_threads(service, q, kwargs["max_results"]):
                 _crawl_job_update(job_id, current=f"{slug}.eml", total=_CRAWL_JOBS.get(job_id, {}).get("total", 0) + 1)
                 try:
-                    _upload(api_url, api_key, f"{slug}.eml", eml_bytes, user_id, user_email)
+                    _upload(api_url, api_key, f"{slug}.eml", eml_bytes, _crawl_owner_id, user_email)
                     _crawl_job_update(
                         job_id,
                         indexed=_CRAWL_JOBS.get(job_id, {}).get("indexed", 0) + 1,
@@ -3513,38 +3539,101 @@ def _run_crawler(job_id: str, source: str, kwargs: dict) -> None:
                         job_id,
                         errors=_CRAWL_JOBS.get(job_id, {}).get("errors", 0) + 1,
                     )
+                # Throttle: give the server time to finish OCR/captioning
+                # before the next file arrives (prevents socket exhaustion).
+                _time.sleep(_INTER_FILE_DELAY)
 
         elif source == "drive":
-            from crawlers.drive_crawler import _build_mime_filter, iter_files  # type: ignore[import]
-            from crawlers.drive_crawler import _upload as _drive_upload
+            from crawlers.drive_crawler import _build_mime_filter, iter_files          # type: ignore[import]
+            from crawlers.drive_crawler import _upload as _drive_upload                # type: ignore[import]
+            from crawlers.drive_crawler import _delete_old_source as _drv_del_source  # type: ignore[import]
 
-            service = _build_drive_service()
-            allowed = _build_mime_filter(kwargs.get("types"))
+            # Optional crawl-state persistence (requires PostgreSQL drive_files table)
+            try:
+                from file_processor.drive_store import update_crawl_state as _drv_update_state
+            except Exception:
+                _drv_update_state = None  # type: ignore[assignment]
+
+            service     = _build_drive_service()
+            allowed     = _build_mime_filter(kwargs.get("types"))
+            incremental = bool(kwargs.get("incremental", True))
+
+            # Callback invoked by iter_files for every unchanged file that is
+            # skipped — lets us keep the job's skipped counter current in
+            # real time without modifying iter_files' yield contract.
+            def _on_skip(_name: str) -> None:
+                _crawl_job_update(
+                    job_id,
+                    skipped=_CRAWL_JOBS.get(job_id, {}).get("skipped", 0) + 1,
+                )
 
             for filename, content, meta in iter_files(
                 service,
                 folder_id      = kwargs.get("folder_id"),
                 allowed_mimes  = allowed,
                 modified_after = kwargs.get("modified_after"),
-                recursive      = kwargs.get("recursive", False),
+                recursive      = bool(kwargs.get("recursive", True)),
                 max_results    = kwargs["max_results"],
+                incremental    = incremental,
+                on_skip        = _on_skip,
             ):
-                _crawl_job_update(job_id, current=filename, total=_CRAWL_JOBS.get(job_id, {}).get("total", 0) + 1)
+                drive_file_id = meta.get("id", "")
+                action        = meta.get("_action", "full")
+                modified_time = meta.get("_modified_time", "")
+                indexed_name  = meta.get("_indexed_name", filename)
+                old_indexed   = meta.get("_old_indexed_name")   # set only for renames
+
+                _crawl_job_update(
+                    job_id,
+                    current = filename,
+                    total   = _CRAWL_JOBS.get(job_id, {}).get("total", 0) + 1,
+                )
+
+                # For renamed files: remove stale Qdrant entries under the old
+                # source name before uploading under the new name.
+                if old_indexed:
+                    try:
+                        _drv_del_source(api_url, api_key, old_indexed)
+                        logger.info(
+                            f"[Crawl:{job_id}] Deleted stale Qdrant entries "
+                            f"for renamed source: {old_indexed!r}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[Crawl:{job_id}] Could not delete old Qdrant "
+                            f"entries for {old_indexed!r}: {e}"
+                        )
+
                 try:
                     _drive_upload(
-                        api_url, api_key, filename, content, user_id, user_email,
-                        drive_file_id=meta.get("id", ""),
+                        api_url, api_key, filename, content, _crawl_owner_id, user_email,
+                        drive_file_id = drive_file_id,
                     )
                     _crawl_job_update(
                         job_id,
-                        indexed=_CRAWL_JOBS.get(job_id, {}).get("indexed", 0) + 1,
+                        indexed = _CRAWL_JOBS.get(job_id, {}).get("indexed", 0) + 1,
                     )
+
+                    # Persist crawl state so the next incremental run can skip
+                    # this file if it hasn't changed.
+                    if _drv_update_state is not None and drive_file_id and modified_time:
+                        try:
+                            _drv_update_state(drive_file_id, modified_time, indexed_name)
+                        except Exception as e:
+                            logger.warning(
+                                f"[Crawl:{job_id}] Could not save crawl state "
+                                f"for {filename}: {e}"
+                            )
+
                 except Exception as e:
-                    logger.warning(f"[Crawl:{job_id}] Upload error: {e}")
+                    logger.warning(f"[Crawl:{job_id}] Upload error ({action}): {e}")
                     _crawl_job_update(
                         job_id,
-                        errors=_CRAWL_JOBS.get(job_id, {}).get("errors", 0) + 1,
+                        errors = _CRAWL_JOBS.get(job_id, {}).get("errors", 0) + 1,
                     )
+                # Throttle: give the server time to finish OCR/captioning
+                # before the next file arrives (prevents socket exhaustion).
+                _time.sleep(_INTER_FILE_DELAY)
 
         _crawl_job_finish(job_id, "done")
 

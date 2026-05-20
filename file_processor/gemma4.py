@@ -37,11 +37,13 @@ DEFAULT_MODEL = "gemma4:e4b"
 OLLAMA_HOST   = "http://localhost:11434"
 PDF_DPI       = 150   # higher = better quality but slower (150 is a good balance)
 
-# ─── OpenRouter config ────────────────────────────────────────────────────────
+# ─── Groq OCR config ──────────────────────────────────────────────────────────
+# GROQ_OCR_API_KEY — dedicated key for OCR (own 6 000 TPM pool).
+# Falls back to the master GROQ_API_KEY when unset.
+# llama-4-scout-17b-16e-instruct is Groq's multimodal model that accepts images.
 
-OPENROUTER_API_KEY   = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_BASE_URL  = "https://openrouter.ai/api/v1"
-OPENROUTER_OCR_MODEL = os.getenv("OPENROUTER_OCR_MODEL", "baidu/qianfan-ocr-fast:free")
+GROQ_OCR_API_KEY = os.getenv("GROQ_OCR_API_KEY") or os.getenv("GROQ_API_KEY", "")
+GROQ_OCR_MODEL   = os.getenv("GROQ_OCR_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # ─── OCR Modes ────────────────────────────────────────────────────────────────
 
@@ -77,44 +79,39 @@ PROMPTS = {
 }
 
 
-# ─── OpenRouter backend ───────────────────────────────────────────────────────
+# ─── Groq OCR backend ─────────────────────────────────────────────────────────
 
-def openrouter_available() -> bool:
-    """
-    True when OPENROUTER_API_KEY is set in .env and the openai SDK is installed.
-    Does not make a network call.
-    """
-    if not OPENROUTER_API_KEY:
+def groq_ocr_available() -> bool:
+    """True when GROQ_OCR_API_KEY (or GROQ_API_KEY) is set. No network call."""
+    if not GROQ_OCR_API_KEY:
         return False
     try:
-        import openai  # noqa: F401
+        import groq  # noqa: F401
         return True
     except ImportError:
         logger.warning(
-            "  [OCR] OPENROUTER_API_KEY is set but 'openai' is not installed. "
-            "Run: pip install openai"
+            "  [OCR] GROQ_OCR_API_KEY is set but 'groq' is not installed. "
+            "Run: pip install groq"
         )
         return False
 
 
-def _ocr_via_openrouter(
+def _ocr_via_groq(
     img_b64: str,
     mode: OCRMode = OCRMode.EXTRACT,
     mime: str = "image/png",
 ) -> str:
     """
-    Send a base64-encoded image to OpenRouter and return the OCR text.
-
-    Uses the OpenAI-compatible chat API.  Raises on any error so the caller
-    can fall back to Gemma4/Ollama.
+    Send a base64-encoded image to Groq's multimodal endpoint and return OCR text.
+    Raises on any error so the caller can fall back to Gemma4/Ollama.
     """
-    from openai import OpenAI
+    from groq import Groq
 
-    client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    client = Groq(api_key=GROQ_OCR_API_KEY)
     prompt = PROMPTS.get(mode, PROMPTS[OCRMode.EXTRACT])
 
     response = client.chat.completions.create(
-        model=OPENROUTER_OCR_MODEL,
+        model=GROQ_OCR_MODEL,
         messages=[{
             "role": "user",
             "content": [
@@ -125,12 +122,12 @@ def _ocr_via_openrouter(
         max_tokens=2048,
         temperature=0.0,
     )
-    
+
     if not response or not getattr(response, "choices", None):
-        raise ValueError("OpenRouter returned no choices (rate-limited or model error).")
+        raise ValueError("Groq OCR returned no choices (rate-limited or model error).")
     content = response.choices[0].message.content
     if not content:
-        raise ValueError("OpenRouter returned an empty response (content=None).")
+        raise ValueError("Groq OCR returned an empty response (content=None).")
     return content.strip()
 
 
@@ -404,26 +401,25 @@ def ocr_image_bytes_gemma(
     OCR from raw image bytes with automatic backend selection.
 
     Backend priority:
-      1. OpenRouter cloud API  — primary when OPENROUTER_API_KEY is set in .env
-                                 Model: OPENROUTER_OCR_MODEL (default: baidu/qianfan-ocr-fast:free)
-      2. Gemma4 via Ollama     — local fallback (or primary when no API key)
+      1. Groq cloud API    — primary when GROQ_OCR_API_KEY (or GROQ_API_KEY) is set.
+                             Model: GROQ_OCR_MODEL (default: meta-llama/llama-4-scout-17b-16e-instruct)
+      2. Gemma4 via Ollama — local fallback (no API key needed, requires Ollama running)
 
     Args:
         image_bytes : raw PNG / JPEG bytes
         mode        : OCRMode (default EXTRACT; use HANDWRITING for handwritten docs)
         model       : Ollama model name (used only by the Gemma4 fallback path)
     """
-    # ── Primary: OpenRouter ───────────────────────────────────────────────────
-    if openrouter_available():
+    # ── Primary: Groq ─────────────────────────────────────────────────────────
+    if groq_ocr_available():
         try:
-            # Detect MIME from magic bytes
-            mime = "image/jpeg" if image_bytes[:2] == b"\xff\xd8" else "image/png"
+            mime    = "image/jpeg" if image_bytes[:2] == b"\xff\xd8" else "image/png"
             img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-            result = _ocr_via_openrouter(img_b64, mode=mode, mime=mime)
-            logger.info(f"  [OCR] OpenRouter ({OPENROUTER_OCR_MODEL}) ✓")
+            result  = _ocr_via_groq(img_b64, mode=mode, mime=mime)
+            logger.info(f"  [OCR] Groq ({GROQ_OCR_MODEL}) ✓")
             return result
         except Exception as e:
-            logger.warning(f"  [OCR] OpenRouter failed — falling back to Gemma4: {e}")
+            logger.warning(f"  [OCR] Groq failed — falling back to Gemma4: {e}")
 
     # ── Fallback: Gemma4 / Ollama ─────────────────────────────────────────────
     logger.info(f"  [OCR] Gemma4 via Ollama ({model})")

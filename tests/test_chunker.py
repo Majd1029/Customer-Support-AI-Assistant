@@ -198,10 +198,13 @@ class TestMetadataSource:
 
 class TestPageStart:
     def test_page_start_matches_input_block_page(self):
-        """Chunks from page 3 text blocks should have page_start=3."""
+        """Chunks from a 0-based page-2 block should have page_start=3 (1-based)."""
+        # PDF parsers produce 0-based page indices (pypdf enumerate(reader.pages)).
+        # The chunker adds 1 when storing page_start so users see 1-based numbers.
+        # A block at 0-based page 2 → page_start = 2 + 1 = 3.
         result = ExtractionResult(
             source_file="paged.pdf",
-            text_blocks=[(3, "This is text from page three of the document, enough tokens here.")],
+            text_blocks=[(2, "This is text from page three of the document, enough tokens here.")],
             tables=[],
             images=[],
             doc_metadata={},

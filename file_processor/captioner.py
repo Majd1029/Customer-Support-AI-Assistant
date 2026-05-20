@@ -24,9 +24,10 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from file_processor.models import ExtractedImage
 
 # ── Concurrency ──────────────────────────────────────────────────────────────
-# Groq is I/O-bound (HTTP) — 4 parallel calls are safe and ~4× faster.
-# LLaVA runs in a separate Ollama process — 2 parallel calls are a safe default.
-_CAPTION_WORKERS: dict[str, int] = {"groq": 4, "llava": 2}
+# Groq: reduced to 2 to avoid exhausting Windows TCP socket buffers (WinError
+# 10055) when the server is processing many files concurrently from a crawl.
+# LLaVA: 1 — Ollama is memory-bound; parallel calls crash the model runner.
+_CAPTION_WORKERS: dict[str, int] = {"groq": 2, "llava": 1}
 
 # ── LLaVA (Ollama) ───────────────────────────────────────────────────────────
 OLLAMA_MODEL = "llava"

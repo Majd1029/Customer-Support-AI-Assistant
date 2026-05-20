@@ -13,8 +13,15 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ── Model ────────────────────────────────────────────────────────────────────
-GROQ_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "groq_api_key")
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Dedicated captioning key gets its own 6 000 TPM free-tier pool.
+# Falls back to the master GROQ_API_KEY when unset — same pattern used
+# by GROQ_GENERATION_API_KEY, GROQ_MEMORY_API_KEY, GROQ_CSV_API_KEY.
+GROQ_API_KEY = (
+    os.getenv("GROQ_CAPTION_API_KEY")
+    or os.getenv("GROQ_API_KEY", "")
+)
 
 # RAG-optimised: structured, 2-sentence output, hard 80-token cap.
 # - System turn keeps the model on-task without repeating instructions.

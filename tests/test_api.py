@@ -126,14 +126,18 @@ class TestHealth:
 
 class TestAuthEndpoints:
     def test_register_new_user(self, client):
+        # Use a unique username per run so the test stays idempotent when the
+        # auth store is backed by PostgreSQL (which persists between test runs).
+        import uuid
+        username = f"newuser_{uuid.uuid4().hex[:8]}"
         resp = client.post("/auth/register", json={
-            "username": "newuser_test",
+            "username": username,
             "password": "pass1234",
         })
         assert resp.status_code in (200, 201)
         data = resp.json()
         assert "token" in data
-        assert data["username"] == "newuser_test"
+        assert data["username"] == username
 
     def test_register_duplicate_username_returns_400(self, client):
         client.post("/auth/register", json={"username": "dup_user", "password": "pass1234"})

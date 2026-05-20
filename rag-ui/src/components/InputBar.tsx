@@ -4,6 +4,7 @@ import {
   BookOpen, FileText, Database, ChevronDown, Globe, Users, Lock,
 } from 'lucide-react';
 import type { ScopeState } from '../types';
+import { friendlyFetchError, friendlyError } from '../utils/errors';
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
 
@@ -168,8 +169,8 @@ export default function InputBar({
         body:   formData,
       });
       if (!uploadRes.ok) {
-        const errText = await uploadRes.text().catch(() => `HTTP ${uploadRes.status}`);
-        setUpload({ state: 'error', message: `Upload failed: ${errText.slice(0, 80)}` });
+        const msg = await friendlyFetchError(uploadRes);
+        setUpload({ state: 'error', message: msg });
         return;
       }
 
@@ -193,7 +194,7 @@ export default function InputBar({
               if (pollRes.status === 404) {
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
-                reject(new Error('Processing job expired — please try again'));
+                reject(new Error('⚠️ The processing job expired. Please try uploading again.'));
                 return;
               }
               if (!pollRes.ok) return; // transient network hiccup, keep polling
@@ -211,7 +212,7 @@ export default function InputBar({
               } else if (job.status === 'failed') {
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
-                reject(new Error(job.error ?? 'Extraction failed on the server'));
+                reject(new Error(friendlyError(500, job.error ?? '') || '⚠️ File processing failed. Please try again.'));
               }
               // 'pending' / 'processing' → keep waiting
             } catch {
@@ -229,7 +230,7 @@ export default function InputBar({
         // but handle gracefully so we don't break if the API changes).
         resultFile = uploadData.result_file;
       } else {
-        setUpload({ state: 'error', message: uploadData.error ?? 'No result from server' });
+        setUpload({ state: 'error', message: friendlyError(500, uploadData.error ?? '') || '⚠️ No result from server. Please try again.' });
         return;
       }
 
@@ -241,8 +242,8 @@ export default function InputBar({
         body:    JSON.stringify({ result_file: resultFile }),
       });
       if (!indexRes.ok) {
-        const errText = await indexRes.text().catch(() => `HTTP ${indexRes.status}`);
-        setUpload({ state: 'error', message: `Indexing failed: ${errText.slice(0, 80)}` });
+        const msg = await friendlyFetchError(indexRes);
+        setUpload({ state: 'error', message: msg });
         return;
       }
 
@@ -255,7 +256,8 @@ export default function InputBar({
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
-      setUpload({ state: 'error', message: (err as Error).message || 'Network error' });
+      const raw = (err as Error).message || '';
+      setUpload({ state: 'error', message: friendlyError(0, raw) || '⚠️ Could not reach the server. Check your connection.' });
     }
   }, [onDocIndexed, onScopeChange, userId]);
 

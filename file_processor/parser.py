@@ -700,8 +700,8 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
     from file_processor.ocr    import is_scanned_pdf, POPPLER_PATH
     from file_processor.gemma4 import (
         gemma4_available,
-        openrouter_available as _openrouter_available,
-        ocr_image_bytes_gemma as _ocr_image_bytes,   # OpenRouter-first, Ollama fallback
+        groq_ocr_available as _groq_ocr_available,
+        ocr_image_bytes_gemma as _ocr_image_bytes,   # Groq-first, Ollama fallback
         OCRMode as _GemmaOCRMode,
     )
 
@@ -710,10 +710,10 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
         doc_metadata["scanned"] = True   # consumed by chunker to select TXT pipeline
         images = []
 
-        _ocr_ok = _openrouter_available() or gemma4_available()
+        _ocr_ok = _groq_ocr_available() or gemma4_available()
         if not _ocr_ok:
             logger.warning(
-                "  OCR non disponible — configure OPENROUTER_API_KEY "
+                "  OCR non disponible — configure GROQ_OCR_API_KEY "
                 "ou lance: ollama pull gemma4:e4b"
             )
         else:
@@ -741,7 +741,7 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
                                 logger.warning(
                                     f"  → page {pnum + 1}: OCR OOM — "
                                     "OCR disabled for remaining pages. "
-                                    "Set OPENROUTER_API_KEY or use a smaller Ollama model."
+                                    "Set GROQ_OCR_API_KEY or use a smaller Ollama model."
                                 )
                                 _ocr_disabled = True
                             else:
@@ -755,7 +755,7 @@ def _parse_pdf(path: Path, pdf_pass: Optional[str] = None):
                         # paragraphs).  Storing the whole page as one block lets the
                         # chunker reassemble table rows and heading hierarchy correctly —
                         # splitting by line would break markdown table structure.
-                        _ocr_backend = "OpenRouter" if _openrouter_available() else "Gemma4/Ollama"
+                        _ocr_backend = "Groq" if _groq_ocr_available() else "Gemma4/Ollama"
                         blocks.append((pnum, page_text.strip()))
                         logger.info(
                             f"  → page {pnum + 1}: {_ocr_backend} OCR ({text_chars} chars)"
