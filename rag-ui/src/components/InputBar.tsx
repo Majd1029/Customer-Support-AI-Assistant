@@ -9,7 +9,7 @@ import { friendlyFetchError, friendlyError } from '../utils/errors';
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
 
 // localStorage key used by CrawlersPanel to persist the user's Google email
-const googleEmailKey = (userId: string) => `docassist_google_email_${userId}`;
+const googleEmailKey = (userId: string) => `customerassist_google_email_${userId}`;
 
 interface DrivePermInfo {
   is_public:     boolean;
@@ -205,10 +205,12 @@ export default function InputBar({
                 error?:       string;
               };
 
-              if (job.status === 'done' && job.result_file) {
+              if (job.status === 'done') {
+                // Resolve with result_file (may be empty string if worker
+                // already auto-indexed — that's fine, we skip POST /index below)
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
-                resolve(job.result_file);
+                resolve(job.result_file ?? '');
               } else if (job.status === 'failed') {
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
@@ -235,16 +237,20 @@ export default function InputBar({
       }
 
       // ── 3. Embed + index the extracted chunks into Qdrant ──────────────────
-      setUpload({ state: 'indexing', filename: file.name });
-      const indexRes = await fetch(`${API_URL}/index`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ result_file: resultFile }),
-      });
-      if (!indexRes.ok) {
-        const msg = await friendlyFetchError(indexRes);
-        setUpload({ state: 'error', message: msg });
-        return;
+      // When using Celery (async path), the worker already auto-indexed during
+      // extraction.  result_file is empty in that case — skip the redundant call.
+      if (resultFile) {
+        setUpload({ state: 'indexing', filename: file.name });
+        const indexRes = await fetch(`${API_URL}/index`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ result_file: resultFile }),
+        });
+        if (!indexRes.ok) {
+          const msg = await friendlyFetchError(indexRes);
+          setUpload({ state: 'error', message: msg });
+          return;
+        }
       }
 
       setUpload({ state: 'done', filename: file.name });
@@ -529,7 +535,7 @@ export default function InputBar({
       </div>
 
       <p className="text-center text-xs mt-1.5" style={{ color: 'var(--text-muted)' }}>
-        Enter to send · Shift+Enter for newline · 📎 attach a document to index it
+        Enter to send · Shift+Enter for newline · 📎 attach a document
       </p>
     </div>
   );

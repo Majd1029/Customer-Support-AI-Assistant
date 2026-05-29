@@ -11,12 +11,6 @@ interface ChatAreaProps {
   onFeedback?:    (messageId: string, rating: 1 | -1) => void;
 }
 
-const EXAMPLE_QUESTIONS = [
-  'What are the key findings in the document?',
-  'Summarise the main recommendations',
-  'What revenue figures are mentioned?',
-];
-
 export default function ChatArea({ messages, isStreaming, onExampleClick, username, onFeedback }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -103,41 +97,6 @@ function EmptyState({ onExampleClick }: { onExampleClick: (q: string) => void })
       >
         Ask anything about your documents
       </h2>
-      <p
-        className="mt-2 text-sm max-w-xs leading-relaxed"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        Index your files via the API, then ask questions. DocAssist uses hybrid RAG to find
-        relevant passages and generate grounded, cited answers.
-      </p>
-
-      {/* Example question chips */}
-      <div className="mt-7 flex flex-wrap gap-2 justify-center">
-        {EXAMPLE_QUESTIONS.map(q => (
-          <button
-            key={q}
-            onClick={() => onExampleClick(q)}
-            className="px-4 py-2 rounded-full text-sm border transition-all duration-200"
-            style={{
-              borderColor: 'var(--border)',
-              color:       'var(--text-muted)',
-              background:  'transparent',
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.borderColor = 'var(--accent)';
-              e.currentTarget.style.color       = 'var(--accent)';
-              e.currentTarget.style.background  = 'rgba(99,102,241,0.06)';
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.borderColor = 'var(--border)';
-              e.currentTarget.style.color       = 'var(--text-muted)';
-              e.currentTarget.style.background  = 'transparent';
-            }}
-          >
-            {q}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

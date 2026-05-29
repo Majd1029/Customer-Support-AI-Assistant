@@ -10,15 +10,6 @@ Or with explicit credentials (useful in CI/CD):
 
     python scripts/create_admin.py --username admin --password secret --email admin@example.com
 
-  Admin user created successfully!
-  username : admin
-  user_id  : e3b54878-8abe-48f3-895e-cdba20b6a9f4
-  role     : admin
-  email    : admin@example.com
-
-  JWT token (30-day expiry):
-  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlM2I1NDg3OC04YWJlLTQ4ZjMtODk1ZS1jZGJhMjBiNmE5ZjQiLCJ1c2VybmFtZSI6ImFkbWluIiwiZW1haWwiOiJhZG1pbkBleGFtcGxlLmNvbSIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc4MTc3OTY2OH0.JR1_O7yTg3paNEX8aoIXb4bwFrTQgqTjpoBhLV1yvJk
-
 Use this token in the Authorization header:
   Authorization: Bearer <token>
 

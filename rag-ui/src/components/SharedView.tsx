@@ -61,7 +61,7 @@ export default function SharedView({ shareToken }: SharedViewProps) {
             <BookOpen size={13} color="white" />
           </div>
           <span className="font-semibold text-sm" style={{ color: 'var(--text-on-dark)' }}>
-            DocAssist
+            CustomerAssist
           </span>
           {conv && (
             <>
@@ -212,7 +212,7 @@ function ErrorState({ type }: { type: string }) {
         className="text-sm underline hover:opacity-80 transition-opacity"
         style={{ color: 'var(--accent)' }}
       >
-        Go to DocAssist
+        Go to CustomerAssist
       </a>
     </div>
   );

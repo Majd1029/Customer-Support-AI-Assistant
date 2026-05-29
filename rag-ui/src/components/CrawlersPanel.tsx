@@ -11,7 +11,7 @@ const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://
 const POLL_INTERVAL_MS = 2000;
 
 // localStorage key for persisting the user's Google email across sessions
-const googleEmailKey = (userId: string) => `docassist_google_email_${userId}`;
+const googleEmailKey = (userId: string) => `customerassist_google_email_${userId}`;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

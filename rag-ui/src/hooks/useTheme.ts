@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 
 type Theme = 'light' | 'dark';
 
-const STORAGE_KEY = 'docassist_theme';
+const STORAGE_KEY = 'customerassist_theme';
 
 function getInitialTheme(): Theme {
   try {

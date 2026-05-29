@@ -48,7 +48,7 @@ function parseSource(s: Record<string, unknown>): Source {
 }
 
 function sessionsKey(userId: string): string {
-  return `docassist_sessions_${userId}`;
+  return `customerassist_sessions_${userId}`;
 }
 
 function loadSessions(userId: string): Session[] {

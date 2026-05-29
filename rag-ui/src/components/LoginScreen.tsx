@@ -65,7 +65,7 @@ export default function LoginScreen({ onLogin, onRegister, onGoogleLogin }: Logi
             className="text-xl font-bold"
             style={{ color: 'var(--text-on-dark)' }}
           >
-            DocAssist
+            CustomerAssist
           </span>
         </div>
 

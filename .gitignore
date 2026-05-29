@@ -94,6 +94,10 @@ internship_report_draft.docx
 *.docx
 Plan-PFE*.pdf
 Plan-PFE*.docx
+test.txt
+eval_results_summary.json
+eval_results.csv
+eval_testset.json
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  RUNTIME OUTPUTS — generated at run time, not source

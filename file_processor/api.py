@@ -295,6 +295,10 @@ try:
     # Falls back to GROQ_API_KEY so existing setups need no change.
     _gen_api_key = os.environ.get("GROQ_GENERATION_API_KEY") or os.environ.get("GROQ_API_KEY")
     _answer_gen        = _AnswerGenerator(groq_api_key=_gen_api_key)
+    # Seed the module-level singleton so rag_graph nodes calling get_generator()
+    # receive an instance keyed with GROQ_GENERATION_API_KEY (not the base key).
+    from file_preparation.generation import get_generator as _seed_gen
+    _seed_gen(_gen_api_key)
     GENERATION_ENABLED = True
     _groq_model = os.environ.get("GROQ_GENERATION_MODEL", "qwen/qwen3-coder-480b-a35b-instruct")
     if _gen_api_key:
@@ -394,6 +398,21 @@ if EMBEDDING_ENABLED and _groq_client is not None:
         print("[GROQ] Shared client injected into retriever module.")
     except Exception:
         pass   # retriever not importable — already reported above
+
+# ── LangGraph RAG pipeline (optional — requires langgraph) ───────────────────
+# rag_graph is the compiled StateGraph singleton.  Both /ask and /ask/stream
+# delegate their entire orchestration to it; the handlers become thin wrappers
+# that build an initial RAGState dict and forward it to the graph.
+_rag_graph     = None
+_RAGState_type = None
+RAG_GRAPH_ENABLED = False
+try:
+    from file_preparation.rag_graph import rag_graph as _rag_graph  # type: ignore[import]
+    from file_preparation.rag_graph import RAGState as _RAGState_type  # type: ignore[import]
+    RAG_GRAPH_ENABLED = True
+    print("[RAG_GRAPH] LangGraph RAG pipeline compiled and ready.")
+except Exception as _rg_err:
+    print(f"[RAG_GRAPH] Unavailable ({_rg_err}) — /ask will use legacy inline pipeline.")
 
 # ── Directories ───────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
@@ -975,8 +994,9 @@ async def get_task_status(job_id: str):
                               stats: chunk count summary
         status="failed"     — job failed; error contains the reason
 
+    When Celery is enabled, status is read from the Celery result backend (Redis DB 2)
+    so it reflects the true worker state regardless of process isolation.
     Job records are kept for 1 hour after completion, then evicted.
-    Processing jobs with no activity for 30 min are automatically marked failed.
     """
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
@@ -2331,6 +2351,8 @@ class AskRequest(BaseModel):
     # ── Customer support features ─────────────────────────────────────────────
     support_mode:    bool                   = False  # enable intent classification + escalation + persona
     persona:         str                    = ""     # custom persona; overrides support_mode default when set
+    # ── Evaluation helpers ────────────────────────────────────────────────────
+    include_chunks:  bool                   = False  # include chunks_in_context in response (for LangSmith eval)
 
     @field_validator("question")
     @classmethod
@@ -2349,6 +2371,61 @@ class AskRequest(BaseModel):
                 f"language_hint must be one of {sorted(_ALLOWED_LANGUAGE_HINTS)!r}."
             )
         return v
+
+
+def _build_rag_state(req: "AskRequest", current_user: Optional[dict]) -> dict:
+    """
+    Build the initial RAGState dict to pass to the LangGraph pipeline.
+
+    Maps every field from AskRequest + the resolved caller identity into the
+    typed state schema.  Runtime singletons (groq_client, qdrant_client) are
+    injected here so graph nodes never need to import from api.py directly.
+    """
+    uid      = current_user["user_id"] if current_user else None
+    is_admin = (current_user or {}).get("role") == "admin"
+
+    # Server-side RBAC filter — merged with any caller-supplied filters
+    rbac_filters = dict(req.filters or {})
+    if uid and not is_admin:
+        rbac_filters["owner_id"] = [uid, "__global__"]
+
+    sf = _build_source_filter(req.source_filter) if EMBEDDING_ENABLED else None
+
+    return {
+        # ── Request inputs ────────────────────────────────────────────────
+        "question":       req.question,
+        "session_id":     req.session_id,
+        "user_id":        uid,
+        "is_admin":       is_admin,
+        "collection":     req.collection,
+        # Retrieval options
+        "limit":          req.limit,
+        "context_window": req.context_window,
+        "rerank":         req.rerank,
+        "use_hyde":       req.use_hyde,
+        "mmr":            req.mmr,
+        "mmr_lambda":     req.mmr_lambda,
+        "decompose":      req.decompose,
+        "multi_hop":      req.multi_hop,
+        "min_score":      req.min_score,
+        "filters":        rbac_filters or None,
+        "source_filter":  sf,
+        # Generation options
+        "max_tokens":     req.max_tokens,
+        "language_hint":  req.language_hint,
+        # Feature flags
+        "support_mode":   req.support_mode,
+        "persona":        req.persona,
+        "memory_enabled": req.memory_enabled,
+        "judge":          req.judge,
+        "reference":      req.reference,
+        "score_chunks":   req.score_chunks,
+        # ── Runtime singletons ────────────────────────────────────────────
+        "groq_client":    _groq_client,
+        "qdrant_client":  _qdrant_client,
+        # ── Timing ───────────────────────────────────────────────────────
+        "start_time":     __import__("time").monotonic(),
+    }
 
 
 @app.post("/ask", dependencies=[Depends(require_api_key), Depends(ask_concurrency_limit)])
@@ -2379,10 +2456,94 @@ async def ask(
             "sources":   [{ "source", "page_start", "section", "score", "chunk_id" }],
             "chunks_used": int,
         }
+
+    Orchestration is delegated to the LangGraph RAG pipeline (rag_graph) when
+    available.  Falls back to the legacy inline pipeline if langgraph is not
+    installed.
     """
     _require_embedding()
 
-    # ── Step 0a: Intent classification (customer support, optional) ──────────
+    if not GENERATION_ENABLED or _answer_gen is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Generation backend unavailable. Start Ollama and pull the model: `ollama serve && ollama pull qwen2.5:7b`",
+        )
+
+    # ── LangGraph path ────────────────────────────────────────────────────────
+    if RAG_GRAPH_ENABLED and _rag_graph is not None:
+        state = _build_rag_state(req, current_user)
+        try:
+            final: dict = await _rag_graph.ainvoke(state)
+        except Exception as _rg_exc:
+            _rg_err_s = str(_rg_exc)
+            if "429" in _rg_err_s or "rate_limit_exceeded" in _rg_err_s or "tokens per day" in _rg_err_s.lower():
+                raise HTTPException(status_code=429, detail="Daily AI usage limit reached. Please try again in a few minutes.")
+            raise HTTPException(status_code=500, detail=f"RAG pipeline failed: {_rg_exc}")
+
+        # Extract escalation result if present
+        _esc_result = final.get("escalation_result")
+        _esc_dict   = _esc_result.to_dict() if _esc_result and hasattr(_esc_result, "to_dict") else None
+        _intent_r   = final.get("intent_result")
+        _intent_dict = _intent_r.to_dict() if _intent_r and hasattr(_intent_r, "to_dict") else None
+        _judge_r    = final.get("judge_result")
+        _judge_dict = _judge_r.to_dict() if _judge_r and hasattr(_judge_r, "to_dict") else None
+
+        _mem_ctx = final.get("memory_context")
+        return JSONResponse(content={
+            "question":            req.question,
+            "rewritten_question":  (
+                final.get("retrieval_question")
+                if final.get("retrieval_question") != req.question
+                else None
+            ),
+            "rewrite_tier":        _mem_ctx.rewrite_tier if _mem_ctx else None,
+            "answer":              final.get("answer", ""),
+            "sources":             final.get("sources", []),
+            "chunks_used":         len([c for c in final.get("gen_chunks", []) if c.get("primary")]),
+            "confidence":          final.get("confidence_score"),
+            "hops":                (final.get("retrieval_result").hops
+                                    if final.get("retrieval_result") else 1),
+            "backend":             final.get("backend", ""),
+            "model":               final.get("model", ""),
+            "elapsed_ms":          final.get("elapsed_ms"),
+            "retrieval_ms":        final.get("retrieval_ms"),
+            "generation_ms":       final.get("generation_ms"),
+            "citation_count":      final.get("citation_count", 0),
+            "context_utilisation": (
+                final.get("tokens_in_context", 0) / 8000
+                if final.get("tokens_in_context") else None
+            ),
+            "no_answer":           final.get("no_answer", False),
+            "token_counts":        final.get("token_counts"),
+            "judge":               _judge_dict,
+            "eval_verdict":        final.get("eval_verdict"),
+            "eval_feedback":       final.get("eval_feedback"),
+            "intent":              _intent_dict,
+            "escalated":           final.get("escalated", False),
+            "escalation":          _esc_dict,
+            "chunks_in_context":   (
+                [
+                    {
+                        "chunk_id":   c.get("chunk_id", ""),
+                        "content":    c.get("content", ""),
+                        "source":     c.get("source", c.get("metadata", {}).get("source", "")),
+                        "page_start": c.get("page_start", c.get("metadata", {}).get("page_start")),
+                        "section":    c.get("section", c.get("metadata", {}).get("section", "")),
+                        "score":      c.get("score", 0.0),
+                    }
+                    for c in (final.get("ordered_chunks") or [])
+                ]
+                if req.include_chunks else None
+            ),
+        })
+
+    # ── Legacy inline pipeline (fallback when langgraph is not installed) ─────
+    _ask_uid      = current_user["user_id"] if current_user else None
+    _ask_is_admin = (current_user or {}).get("role") == "admin"
+    _ask_rbac_filters = dict(req.filters or {})
+    if _ask_uid and not _ask_is_admin:
+        _ask_rbac_filters["owner_id"] = [_ask_uid, "__global__"]
+
     _intent_result = None
     if req.support_mode and INTENT_ENABLED and _classify_intent is not None:
         try:
@@ -2390,14 +2551,9 @@ async def ask(
                 None,
                 lambda: _classify_intent(req.question, groq_client=_groq_client),
             )
-            logger.info(
-                f"[INTENT] /ask: intent={_intent_result.intent} "
-                f"strategy={_intent_result.strategy} conf={_intent_result.confidence:.2f}"
-            )
         except Exception as _int_exc:
             logger.warning(f"[INTENT] /ask classification failed: {_int_exc}")
 
-    # Pre-retrieval escalation: explicit request or complaint → skip RAG entirely
     if _intent_result is not None and _should_escalate is not None:
         _pre_esc = _should_escalate(intent=_intent_result)
         if _pre_esc.should_escalate:
@@ -2413,201 +2569,109 @@ async def ask(
                 "intent":     _intent_result.to_dict(),
             })
 
-    # ── Resolve caller identity + RBAC filter ────────────────────────────────
-    _ask_uid      = current_user["user_id"] if current_user else None
-    _ask_is_admin = (current_user or {}).get("role") == "admin"
-
-    # RBAC: regular users are restricted to their own docs + global KB
-    _ask_rbac_filters = dict(req.filters or {})
-    if _ask_uid and not _ask_is_admin:
-        _ask_rbac_filters["owner_id"] = [_ask_uid, "__global__"]
-
-    # ── Step 0b: Memory — load buffer + rewrite query (optional) ─────────────
     mem_ctx = None
     retrieval_question = req.question
-
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
         assert _mem_load_context is not None
         try:
             mem_ctx = await _mem_load_context(
-                session_id     = req.session_id,
-                # FIX: use real user_id from JWT, not session_id
-                user_id        = _ask_uid or req.session_id,
-                raw_query      = req.question,
-                groq_client    = _groq_client,
-                memory_enabled = True,
+                session_id=req.session_id,
+                user_id=_ask_uid or req.session_id,
+                raw_query=req.question,
+                groq_client=_groq_client,
+                memory_enabled=True,
             )
             retrieval_question = mem_ctx.rewritten_query
         except Exception as _mem_exc:
             logger.warning(f"[MEMORY] load_memory_context failed: {_mem_exc}")
 
-    # ── Step 1: Retrieve evidence (single-hop or multi-hop) ───────────────────
     assert _qdrant_client is not None
     sf = _build_source_filter(req.source_filter)
-    _retriever_kwargs = dict(
-        collection     = req.collection,
-        limit          = req.limit,
-        context_window = req.context_window,
-        filters        = _ask_rbac_filters if _ask_rbac_filters else req.filters,
-        source_filter  = sf,
-        min_score      = req.min_score,
-        rerank         = req.rerank,
-        use_hyde       = req.use_hyde,
-        mmr            = req.mmr,
-        mmr_lambda     = req.mmr_lambda,
-        decompose      = req.decompose,
+    _retr_kw = dict(
+        collection=req.collection, limit=req.limit, context_window=req.context_window,
+        filters=_ask_rbac_filters if _ask_rbac_filters else req.filters,
+        source_filter=sf, min_score=req.min_score, rerank=req.rerank,
+        use_hyde=req.use_hyde, mmr=req.mmr, mmr_lambda=req.mmr_lambda, decompose=req.decompose,
     )
-
     try:
-        retrieval: _RetrievalResult = (
-            _retr_multihop(retrieval_question, _qdrant_client, **_retriever_kwargs)
-            if req.multi_hop
-            else _retr_retrieve_evidence(retrieval_question, _qdrant_client, **_retriever_kwargs)
-        )
+        retrieval = (_retr_multihop(retrieval_question, _qdrant_client, **_retr_kw)
+                     if req.multi_hop
+                     else _retr_retrieve_evidence(retrieval_question, _qdrant_client, **_retr_kw))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
 
     if not retrieval.chunks:
         return JSONResponse(content={
-            "question":    req.question,
-            "answer":      "I could not find any relevant information in the indexed documents.",
-            "sources":     [],
-            "chunks_used": 0,
-            "confidence":  None,
-            "hops":        1,
+            "question": req.question, "answer": "I could not find any relevant information in the indexed documents.",
+            "sources": [], "chunks_used": 0, "confidence": None, "hops": 1,
         })
 
-    # ── Step 2: Check generation backend ──────────────────────────────────────
-    if not GENERATION_ENABLED or _answer_gen is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Generation backend unavailable. Start Ollama and pull the model: `ollama serve && ollama pull qwen2.5:7b`",
-        )
-
-    # ── Step 3: Flatten chunks + neighbors for AnswerGenerator ────────────────
-    # Deduplicate by chunk_id so the same passage never appears twice in context.
-    seen_chunk_ids: set[str] = set()
-    gen_chunks: list[dict]   = []
-
+    seen: set[str] = set()
+    gen_chunks: list[dict] = []
     for chunk in retrieval.chunks:
-        if chunk.chunk_id not in seen_chunk_ids:
-            seen_chunk_ids.add(chunk.chunk_id)
-            gen_chunks.append({
-                "content":  chunk.content,
-                "chunk_id": chunk.chunk_id,
-                "score":    chunk.score,
-                "hop":      chunk.hop,
-                "primary":  True,
-                "metadata": chunk.metadata,
-            })
+        if chunk.chunk_id not in seen:
+            seen.add(chunk.chunk_id)
+            gen_chunks.append({"content": chunk.content, "chunk_id": chunk.chunk_id,
+                                "score": chunk.score, "hop": chunk.hop, "primary": True, "metadata": chunk.metadata})
         for nb in chunk.neighbors:
             nb_id = nb.get("chunk_id", "")
-            if nb_id and nb_id not in seen_chunk_ids:
-                seen_chunk_ids.add(nb_id)
-                gen_chunks.append({
-                    "content":  nb.get("content", ""),
-                    "chunk_id": nb_id,
-                    "score":    0.0,
-                    "hop":      1,
-                    "primary":  False,
-                    "metadata": nb,
-                })
+            if nb_id and nb_id not in seen:
+                seen.add(nb_id)
+                gen_chunks.append({"content": nb.get("content", ""), "chunk_id": nb_id,
+                                    "score": 0.0, "hop": 1, "primary": False, "metadata": nb})
 
-    # ── Step 4: Generate answer (Qwen2.5-7B via Ollama) ──────────────────────
-    # AnswerGenerator handles: token-budget trimming, context formatting,
-    # citation injection.  Raises RuntimeError if Ollama is not running.
-    # Resolve persona: explicit field wins; support_mode activates the default CS persona
     _persona = req.persona or (_CS_PERSONA if req.support_mode else "")
-
     cfg = _GenerationConfig(
-        temperature=0.2,
-        max_tokens=req.max_tokens,
-        language_hint=req.language_hint,
+        temperature=0.2, max_tokens=req.max_tokens, language_hint=req.language_hint,
         conversation_summary=mem_ctx.summary_as_context() if mem_ctx else "",
         user_facts=mem_ctx.user_facts_as_context() if mem_ctx else "",
         user_preferences=mem_ctx.recalled_preferences_as_context() if mem_ctx else "",
         persona=_persona,
     )
-    # Pass conversation history so Qwen2.5 sees prior turns in the generation prompt.
     _gen_history = mem_ctx.prompt_messages() if (mem_ctx and mem_ctx.has_history) else None
-
     try:
         result = _answer_gen.generate(retrieval_question, gen_chunks, cfg, history=_gen_history)
     except Exception as e:
         _err_s = str(e)
-        if "429" in _err_s or "rate_limit_exceeded" in _err_s or "tokens per day" in _err_s.lower() or "tokens per minute" in _err_s.lower():
-            raise HTTPException(status_code=429, detail="Daily AI usage limit reached. Please try again in a few minutes, or tomorrow when the quota resets.")
+        if "429" in _err_s or "rate_limit_exceeded" in _err_s or "tokens per day" in _err_s.lower():
+            raise HTTPException(status_code=429, detail="Daily AI usage limit reached. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
-
-    # Wire retrieval timing into the result for unified reporting
     result.retrieval_ms = retrieval.elapsed_ms
 
-    # ── Step 5: Score answer confidence (best-effort — never fails the response)
-    # Use result.chunks_in_context (the token-budget-trimmed set the LLM actually
-    # saw) rather than retrieval.chunks (the full retrieved set).  Scoring against
-    # chunks the model never received inflates the confidence score artificially.
     confidence: float | None = None
     try:
-        # score_answer_confidence expects RetrievedChunk objects with a .content attr.
-        # chunks_in_context are plain dicts — wrap them in lightweight proxies.
-        class _ChunkProxy:
-            __slots__ = ("content",)
-            def __init__(self, d: dict) -> None:
-                self.content = d.get("content", "")
-
-        ctx_chunks = [_RC(
-            chunk_id = c.get("chunk_id", ""),
-            content  = c.get("content", ""),
-            score    = c.get("score", 0.0),
-            metadata = {},
-        ) for c in result.chunks_in_context] if result.chunks_in_context else retrieval.chunks
-
-        confidence = _retr_score_confidence(
-            result.answer,
-            ctx_chunks,
-            groq_client=_groq_client,
-        )
+        ctx_chunks = [_RC(chunk_id=c.get("chunk_id",""), content=c.get("content",""),
+                          score=c.get("score",0.0), metadata={})
+                      for c in result.chunks_in_context] if result.chunks_in_context else retrieval.chunks
+        confidence = _retr_score_confidence(result.answer, ctx_chunks, groq_client=_groq_client)
     except Exception:
         pass
 
-    # ── Step 6: LLM-as-a-Judge (optional, best-effort) ───────────────────────
     judge_data: dict | None = None
-    if req.judge and JUDGE_ENABLED:
-        assert _judge_answer is not None
+    if req.judge and JUDGE_ENABLED and _judge_answer is not None:
         try:
-            jr = _judge_answer(
-                question      = req.question,
-                answer        = result.answer,
-                chunks        = result.chunks_in_context,
-                no_answer     = result.no_answer,
-                reference     = req.reference or None,
-                score_chunks  = req.score_chunks,
-                retrieval_ms  = result.retrieval_ms,
-                generation_ms = result.generation_ms,
-                token_counts  = result.token_counts,
-            )
+            jr = _judge_answer(question=req.question, answer=result.answer,
+                               chunks=result.chunks_in_context, no_answer=result.no_answer,
+                               reference=req.reference or None, score_chunks=req.score_chunks,
+                               retrieval_ms=result.retrieval_ms, generation_ms=result.generation_ms,
+                               token_counts=result.token_counts)
             judge_data = jr.to_dict()
         except Exception as exc:
             logger.warning(f"[JUDGE] /ask evaluation failed: {exc}")
 
-    # ── Step 7: Memory write-back + summarisation + fact extraction (async) ─────
     if req.memory_enabled and MEMORY_ENABLED and req.session_id:
-        # Use JWT user_id for memory scoping — fall back to session_id only when
-        # the request is unauthenticated (guest / anonymous usage).
         _ask_sid = req.session_id
         _ask_mem_uid = _ask_uid or _ask_sid
 
         def _write_turns() -> None:
             assert _mem_write_turn is not None
             try:
-                _mem_write_turn(_ask_sid, _ask_mem_uid, "user",      req.question)
+                _mem_write_turn(_ask_sid, _ask_mem_uid, "user", req.question)
                 _mem_write_turn(_ask_sid, _ask_mem_uid, "assistant", result.answer)
             except Exception as _wt_exc:
                 logger.warning(f"[MEMORY] write_turn failed: {_wt_exc}")
         background_tasks.add_task(_write_turns)
 
-        # Trigger incremental summarisation when the buffer is getting full.
-        # Runs as a separate BackgroundTask so write_turns() always completes first.
         def _maybe_summarise() -> None:
             try:
                 if _mem_should_summarise and _mem_should_summarise(_ask_sid):
@@ -2617,9 +2681,6 @@ async def ask(
                 logger.warning(f"[MEMORY] summarise_session failed: {_s_exc}")
         background_tasks.add_task(_maybe_summarise)
 
-        # Sprint 4 — extract and persist structured user facts from this turn.
-        # Uses read_all_turns (not read_buffer) so facts stated in older turns
-        # that have been budget-trimmed from the live window are still seen.
         def _extract_facts() -> None:
             try:
                 if _mem_extract_facts and _mem_read_all_turns and _groq_client:
@@ -2629,7 +2690,6 @@ async def ask(
                 logger.warning(f"[MEMORY] extract_and_store_facts failed: {_ef_exc}")
         background_tasks.add_task(_extract_facts)
 
-        # Sprint 5 — auto-extract and persist semantic preferences from this turn.
         def _extract_preferences() -> None:
             try:
                 if _mem_extract_prefs and _mem_read_all_turns and _groq_client:
@@ -2639,9 +2699,6 @@ async def ask(
                 logger.warning(f"[MEMORY] extract_and_store_preferences failed: {_ep_exc}")
         background_tasks.add_task(_extract_preferences)
 
-    # ── Post-generation escalation check ────────────────────────────────────────
-    # Derive a verdict from the judge overall score when the eval graph didn't run.
-    # judge_data comes from JudgeResult.to_dict() — no "verdict" key; we infer one.
     _ask_eval_verdict: str | None = None
     if judge_data:
         _overall = judge_data.get("overall")
@@ -2651,15 +2708,27 @@ async def ask(
     _post_escalation: dict | None = None
     if req.support_mode and ESCALATION_ENABLED and _should_escalate is not None:
         try:
-            _post_esc = _should_escalate(
-                intent       = _intent_result,
-                no_answer    = result.no_answer,
-                eval_verdict = _ask_eval_verdict,
-            )
+            _post_esc = _should_escalate(intent=_intent_result, no_answer=result.no_answer,
+                                         eval_verdict=_ask_eval_verdict)
             if _post_esc.should_escalate:
                 _post_escalation = _post_esc.to_dict()
         except Exception as _esc_exc:
             logger.warning(f"[ESCALATION] /ask post-generation check failed: {_esc_exc}")
+
+    # Serialize chunks_in_context for eval (include_chunks=True only — keeps normal responses lean)
+    _chunks_out: list | None = None
+    if req.include_chunks and result.chunks_in_context:
+        _chunks_out = [
+            {
+                "chunk_id":  c.get("chunk_id", ""),
+                "content":   c.get("content", ""),
+                "source":    c.get("source", c.get("metadata", {}).get("source", "")),
+                "page_start": c.get("page_start", c.get("metadata", {}).get("page_start")),
+                "section":   c.get("section", c.get("metadata", {}).get("section", "")),
+                "score":     c.get("score", 0.0),
+            }
+            for c in result.chunks_in_context
+        ]
 
     return JSONResponse(content={
         "question":            req.question,
@@ -2679,10 +2748,10 @@ async def ask(
         "context_utilisation": result.context_utilisation,
         "no_answer":           result.no_answer,
         "judge":               judge_data,
-        # Customer support fields (null when support_mode=False)
         "intent":              _intent_result.to_dict() if _intent_result else None,
         "escalated":           _post_escalation is not None,
         "escalation":          _post_escalation,
+        "chunks_in_context":   _chunks_out,   # None unless include_chunks=True
     })
 
 
@@ -2713,6 +2782,10 @@ async def ask_stream(
         es.onmessage = e => { const d = JSON.parse(e.data); ... };
 
     Returns 503 if Ollama or Qdrant is not available.
+
+    Orchestration is delegated to the LangGraph RAG pipeline (rag_graph) when
+    available.  Falls back to the legacy inline pipeline if langgraph is not
+    installed.
     """
     _require_embedding()
 
@@ -2722,7 +2795,22 @@ async def ask_stream(
             detail="Generation backend unavailable. Start Ollama and pull the model: `ollama serve && ollama pull qwen2.5:7b`",
         )
 
-    # ── Intent classification + pre-retrieval escalation (support_mode) ─────────
+    # ── LangGraph streaming path ──────────────────────────────────────────────
+    if RAG_GRAPH_ENABLED and _rag_graph is not None:
+        state = _build_rag_state(req, current_user)
+
+        async def _graph_sse():
+            async for event in _rag_graph.astream(state, stream_mode="custom"):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            _graph_sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ── Legacy inline streaming pipeline (fallback) ───────────────────────────
+    # Intent classification + pre-retrieval escalation (support_mode)
     _stream_intent_result = None
     if req.support_mode and INTENT_ENABLED and _classify_intent is not None:
         try:
@@ -3662,9 +3750,7 @@ async def start_gmail_crawl(req: GmailCrawlRequest, background_tasks: Background
     job_id = str(uuid.uuid4())[:8]
     config = req.model_dump()
     _crawl_job_create(job_id, "gmail", config)
-    background_tasks.add_task(
-        _run_crawler, job_id, "gmail", config
-    )
+    background_tasks.add_task(_run_crawler, job_id, "gmail", config)
     return {"job_id": job_id, "status": "running", "poll_url": f"/crawl/status/{job_id}"}
 
 
@@ -3686,9 +3772,7 @@ async def start_drive_crawl(req: DriveCrawlRequest, background_tasks: Background
     job_id = str(uuid.uuid4())[:8]
     config = req.model_dump()
     _crawl_job_create(job_id, "drive", config)
-    background_tasks.add_task(
-        _run_crawler, job_id, "drive", config
-    )
+    background_tasks.add_task(_run_crawler, job_id, "drive", config)
     return {"job_id": job_id, "status": "running", "poll_url": f"/crawl/status/{job_id}"}
 
 

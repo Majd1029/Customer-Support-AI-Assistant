@@ -88,8 +88,12 @@ _DEFAULT_MODEL = "qwen/qwen3-32b"
 # Model: override via JUDGE_MODEL env var
 _JUDGE_MODEL: str = os.getenv("JUDGE_MODEL", _DEFAULT_MODEL)
 
-# API key: prefer JUDGE_API_KEY, fall back to GROQ_API_KEY (already set for OCR/HyDE)
-_JUDGE_API_KEY: str = os.getenv("JUDGE_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+# API key: prefer GROQ_EVAL_API_KEY (dedicated eval pool) → JUDGE_API_KEY → GROQ_API_KEY
+_JUDGE_API_KEY: str = (
+    os.getenv("GROQ_EVAL_API_KEY", "")
+    or os.getenv("JUDGE_API_KEY", "")
+    or os.getenv("GROQ_API_KEY", "")
+)
 
 # Generation settings
 _MAX_TOKENS  = 2048  # Qwen3 <think> blocks can be 500-800 tokens; 2048 gives room for both thinking and JSON output

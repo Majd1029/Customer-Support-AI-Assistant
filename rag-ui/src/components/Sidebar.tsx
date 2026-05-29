@@ -69,7 +69,7 @@ export default function Sidebar({
             <BookOpen size={15} color="white" />
           </div>
           <span className="font-semibold text-sm" style={{ color: 'var(--text-on-dark)' }}>
-            DocAssist
+            CustomerAssist
           </span>
           <div className="ml-auto flex items-center gap-2">
             <StatusDot status={health} />
@@ -344,7 +344,7 @@ function SettingsModal({
   user:             User;
   onClose:          () => void;
 }) {
-  const [notifications, setNotifications] = useState(() => localStorage.getItem('docassist_notif') !== 'false');
+  const [notifications, setNotifications] = useState(() => localStorage.getItem('customerassist_notif') !== 'false');
   const [docsIndexed, setDocsIndexed]     = useState<number | null>(null);
 
   // Fetch document count when modal opens
@@ -366,7 +366,7 @@ function SettingsModal({
 
   const handleNotifToggle = (v: boolean) => {
     setNotifications(v);
-    localStorage.setItem('docassist_notif', String(v));
+    localStorage.setItem('customerassist_notif', String(v));
   };
 
   return (
@@ -440,42 +440,6 @@ function SettingsModal({
                 </p>
               </div>
               <Toggle checked={notifications} onChange={handleNotifToggle} />
-            </div>
-          </Section>
-
-          {/* ── QUERY SETTINGS ─────────────────────────────────────────────── */}
-          <Section icon={<Settings2 size={14} />} title="QUERY SETTINGS">
-            <div className="space-y-3">
-              <AlwaysOnRow label="Memory"    description="Conversation history across turns" />
-              <AlwaysOnRow label="Judge"     description="LLM-as-a-Judge evaluation" />
-              <AlwaysOnRow label="Multi-hop" description="Follow-up retrieval for complex questions" />
-
-              <div className="flex items-center justify-between pt-1">
-                <div>
-                  <p className="text-sm" style={{ color: 'var(--text-on-dark)' }}>Results</p>
-                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                    Chunks retrieved per query
-                  </p>
-                </div>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={settings.limit}
-                  onChange={e =>
-                    onSettingsChange({
-                      ...settings,
-                      limit: Math.min(20, Math.max(1, Number(e.target.value) || 5)),
-                    })
-                  }
-                  className="w-14 px-2 py-1.5 rounded-lg text-xs text-center border outline-none"
-                  style={{
-                    background:  'rgba(255,255,255,0.05)',
-                    color:       'var(--text-on-dark)',
-                    borderColor: 'var(--border-dark)',
-                  }}
-                />
-              </div>
             </div>
           </Section>
 

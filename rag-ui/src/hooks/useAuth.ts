@@ -2,10 +2,10 @@ import { useState, useCallback, useEffect } from 'react';
 import type { User } from '../types';
 
 const API_URL     = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
-const SESSION_KEY = 'docassist_current_user';
+const SESSION_KEY = 'customerassist_current_user';
 
 // ── Legacy localStorage helpers (backwards compat for users without server) ───
-const USERS_KEY = 'docassist_users';
+const USERS_KEY = 'customerassist_users';
 
 interface LegacyUser {
   id: string; username: string; passwordHash: string;

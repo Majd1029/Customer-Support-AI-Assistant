@@ -86,6 +86,7 @@ nltk
 together
 openai
 PyJWT>=2.12.1
+langsmith
 
 # ── Google API crawlers (crawlers/gmail_crawler.py + crawlers/drive_crawler.py) ─
 # Install separately or run:  pip install -r crawlers/requirements.txt
