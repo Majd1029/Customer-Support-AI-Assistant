@@ -108,7 +108,7 @@ def _ask(question: str) -> dict[str, Any]:
 
 # ── Custom LangSmith evaluator (wraps judge.py) ─────────────────────────────────
 
-def _make_evaluators() -> list:
+def _make_evaluators(local_csv_path: str | None = None) -> list:
     """
     Return a list of LangSmith evaluator functions.
 
@@ -119,11 +119,15 @@ def _make_evaluators() -> list:
     and returns {"key": str, "score": float}.
 
     We produce one evaluator per judge dimension + one for overall.
+
+    If `local_csv_path` is set, every JudgeResult is also appended to that CSV
+    file via judge.save_to_csv() — one row per judged example — so the local
+    machine retains a full copy of the eval independently of LangSmith.
     """
     # Import here so the script doesn't crash if judge deps are missing
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from file_preparation.evaluation.judge import judge_answer
+        from file_preparation.evaluation.judge import judge_answer, save_to_csv
         from groq import Groq
         groq_client = Groq(api_key=GROQ_EVAL_API_KEY) if GROQ_EVAL_API_KEY else None
     except ImportError as exc:
@@ -156,6 +160,15 @@ def _make_evaluators() -> list:
             result = None
 
         run._judge_cache = result  # type: ignore[attr-defined]
+
+        # Mirror the result to a local CSV so the host machine retains
+        # a copy independent of LangSmith.
+        if result is not None and local_csv_path:
+            try:
+                save_to_csv(result, local_csv_path)
+            except Exception as exc:
+                logger.warning(f"[LS] save_to_csv failed: {exc}")
+
         return result
 
     # ── One evaluator function per dimension ────────────────────────────────────
@@ -275,6 +288,8 @@ def main() -> None:
     parser.add_argument("--experiment",  type=str, default="", help="Experiment prefix shown in LangSmith UI")
     parser.add_argument("--n",           type=int, default=0,  help="Limit to first N examples (0 = all)")
     parser.add_argument("--dataset",     type=str, default=LANGSMITH_DATASET, help="LangSmith dataset name")
+    parser.add_argument("--csv",         type=str, default="langsmith_eval_log.csv",
+                        help="Local CSV file path to append every JudgeResult to (set empty string to disable)")
     args = parser.parse_args()
 
     # ── Validate env ────────────────────────────────────────────────────────────
@@ -321,7 +336,10 @@ def main() -> None:
     logger.info(f"[LS] Running evaluation on {len(examples)} examples …")
 
     # ── Build evaluators ────────────────────────────────────────────────────────
-    evaluators = _make_evaluators()
+    local_csv = args.csv.strip() or None
+    if local_csv:
+        logger.info(f"[LS] Local CSV mirror enabled — appending to: {local_csv}")
+    evaluators = _make_evaluators(local_csv_path=local_csv)
     if not evaluators:
         logger.error("[LS] No evaluators available — check judge.py imports.")
         sys.exit(1)

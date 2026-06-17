@@ -1,50 +1,43 @@
 """
 evaluate_rag.py — RAG evaluation suite for the internship report.
 
-Evaluation tiers (three-tier methodology):
-  Tier 1 — Lexical Baseline (ROUGE / BLEU)
+Two evaluation modes (run each one independently):
+
+  ROUGE / BLEU evaluation  (--rouge-bleu)
     • ROUGE-1 F1        — unigram overlap with reference
     • ROUGE-2 F1        — bigram overlap with reference
     • ROUGE-L F1        — longest common subsequence
     • BLEU-1            — 1-gram precision (unigram)
     • BLEU-4            — 4-gram precision (standard MT metric)
-    Limitation: measures surface token overlap; penalises correct paraphrases.
+    • Coverage          — fraction of reference words found in the answer
+    Calls /ask with judge=False — no LLM evaluation charges, ~3-5× faster.
+    Limitation: surface token overlap; penalises correct paraphrases.
 
-  Tier 2 — Semantic (lightweight fast path, no LLM call)
-    • Confidence Score  — BGE-M3 cosine similarity (query ↔ answer grounding)
-    • Coverage          — fraction of reference words found in the answer (recall proxy)
-
-  Tier 3 — Holistic LLM-as-a-Judge (qwen/qwen3-32b via Groq)
+  LLM-as-a-Judge evaluation  (--judge-only)
     • Faithfulness      — every claim grounded in context (weight 0.35)
     • Answer Relevance  — directly addresses the question (weight 0.25)
     • Context Relevance — retrieved chunks are relevant (weight 0.15)
     • Completeness      — all aspects of question covered (weight 0.15)
     • Citation Accuracy — [Source:] citations map to supporting chunks (weight 0.10)
     • Overall (weighted)— aggregated judge score (0–1)
+    Calls /ask with judge=True; the qwen/qwen3-32b judge is invoked via Groq.
 
-Three evaluation modes (for ablation study):
-  • full       — standard RAG (system prompt + retrieval)
+Optional ablation modes (for either evaluation):
   • no_prompt  — blank persona / no grounding rules, retrieval only
   • no_memory  — memory_enabled=False, no query rewriting
 
-Pipeline:
-  1. Pull document chunks from Qdrant (or load a saved test set)
-  2. Generate Q&A pairs via Groq (question + reference answer)
-  3. Query /ask with judge=true in all 3 modes, compute all three tiers
-  4. Print 4 formatted tables + save per-question CSV
-
 Usage:
-    # Full three-tier evaluation (ROUGE + LLM judge)
-    python scripts/evaluate_rag.py --testset eval_testset.json
+    # ROUGE / BLEU evaluation alone
+    python scripts/evaluate_rag.py --testset eval_testset.json --rouge-bleu
 
-    # Tier 1 only — ROUGE/BLEU, no LLM judge charges, ~3× faster
-    python scripts/evaluate_rag.py --testset eval_testset.json --tier1-only
+    # LLM-as-a-Judge evaluation alone
+    python scripts/evaluate_rag.py --testset eval_testset.json --judge-only
 
-    # Tier 1 only — recompute from a previously saved CSV (zero API calls)
+    # ROUGE / BLEU — recompute from a previously saved CSV (zero API calls)
     python scripts/evaluate_rag.py --testset eval_testset.json --from-csv eval_results.csv
 
-    # Full mode, skip ablations (quickest full run)
-    python scripts/evaluate_rag.py --testset eval_testset.json --skip-noprompt --skip-nomem
+    # Skip ablations for the quickest single-mode run
+    python scripts/evaluate_rag.py --testset eval_testset.json --judge-only --skip-noprompt --skip-nomem
 
     # Generate + save a new testset, then evaluate
     python scripts/evaluate_rag.py --n 20 --sleep 4 --save-testset eval_testset.json
@@ -416,7 +409,7 @@ def _tier1_from_csv(csv_path: str, testset: list[dict]) -> list[dict]:
 
 # ── Step 3b: Full pipeline — all three tiers ─────────────────────────────────
 
-def _ask(question: str, reference: str, mode: str) -> dict:
+def _ask(question: str, reference: str, mode: str, judge_only: bool = False) -> dict:
     """
     Call POST /ask with judge=True, then compute all three evaluation tiers:
       Tier 1 — ROUGE-1/2/L, BLEU-1/4   (lexical, computed here from reference)
@@ -427,19 +420,28 @@ def _ask(question: str, reference: str, mode: str) -> dict:
       "full"      — standard RAG (system prompt + retrieval)
       "no_prompt" — blank persona, no grounding rules
       "no_memory" — memory_enabled=False, no query rewriting
+
+    judge_only:
+      When True, skip Tier 1 (ROUGE/BLEU) and Tier 2 (coverage) entirely.
+      Only the LLM-as-a-Judge dimensions are computed; lexical/coverage
+      fields are left as None. Confidence is still pulled from /ask since
+      it costs nothing (returned in the response).
     """
+
     body: dict[str, Any] = {
-        "question":       question,
-        "limit":          5,
-        "rerank":         False,
-        "use_hyde":       False,
-        "mmr":            False,
-        "multi_hop":      False,
-        "memory_enabled": False,
-        "judge":          True,      # ← enable LLM-as-a-Judge (Tier 3)
-        "max_tokens":     1024,      # must be ≥1024 so citations are written before truncation
-        "include_chunks": True,      # return chunks_in_context for judge scoring
-    }
+    "question":       question,
+    "limit":          4,         # was 5 or 10
+    "rerank":         True,      # was False
+    "context_window": 0,         # was 1 (the default)
+    "min_score":      0.10,      # was 0.01 (the default)
+    "use_hyde":       False,
+    "mmr":            False,
+    "multi_hop":      False,
+    "memory_enabled": False,
+    "judge":          True,      # for langsmith_eval.py keep this False since LangSmith runs the judge separately
+    "max_tokens":     1024,
+    "include_chunks": True,
+}
 
     if mode == "no_prompt":
         body["persona"] = " "          # blank persona disables system prompt rules
@@ -475,11 +477,14 @@ def _ask(question: str, reference: str, mode: str) -> dict:
     judge      = data.get("judge") or {}
     dims       = judge.get("dimensions") or {}
 
-    # ── Tier 1: compute lexical scores against the reference ──────────────────
-    lexical = compute_lexical(answer, reference)
-
-    # ── Tier 2: coverage ──────────────────────────────────────────────────────
-    cov = coverage(answer, reference)
+    # ── Tier 1 & 2: skip when --judge-only is set ─────────────────────────────
+    if judge_only:
+        lexical = {"rouge1": None, "rouge2": None, "rougeL": None,
+                   "bleu1":  None, "bleu4":  None}
+        cov = None
+    else:
+        lexical = compute_lexical(answer, reference)
+        cov     = coverage(answer, reference)
 
     # ── Tier 3: LLM-judge dimensions from /ask response ──────────────────────
     result: dict[str, Any] = {
@@ -576,8 +581,8 @@ def print_judge_table(avg: dict, title: str) -> None:
         ("Citation Accuracy",  "citation_accuracy", "1.00  (weight 0.10)"),
         ("─"*26,               None,                ""),
         ("Overall (weighted)", "overall",           "1.00"),
-        ("Confidence Score",   "confidence",        "1.00  (Tier 2 semantic)"),
-        ("Coverage",           "coverage",          "1.00  (Tier 2 reference recall)"),
+        ("Confidence Score",   "confidence",        "1.00  (semantic grounding)"),
+        ("Coverage",           "coverage",          "1.00  (reference recall)"),
     ]
     for label, key, note in rows:
         if key is None:
@@ -589,38 +594,38 @@ def print_judge_table(avg: dict, title: str) -> None:
 
 
 def print_three_tier_table(avg: dict, title: str) -> None:
-    """Combined three-tier summary table for the report."""
+    """Combined summary table — ROUGE/BLEU + semantic + LLM judge."""
     W = 70
     print(f"\n{'='*W}")
     print(f"  {title}")
     print(f"{'='*W}")
-    print(f"  {'Tier':<8}  {'Metric':<22}  {'Score':>8}  Interpretation")
-    print(f"  {'-'*8}  {'-'*22}  {'-'*8}  {'-'*28}")
+    print(f"  {'Group':<10}  {'Metric':<22}  {'Score':>8}  Interpretation")
+    print(f"  {'-'*10}  {'-'*22}  {'-'*8}  {'-'*28}")
 
-    tiers = [
-        ("Lexical", "ROUGE-1 F1",        "rouge1",           "surface token overlap"),
-        ("Lexical", "ROUGE-L F1",        "rougeL",           "sequence overlap"),
-        ("Lexical", "BLEU-1",            "bleu1",            "unigram precision"),
-        ("Lexical", "BLEU-4",            "bleu4",            "4-gram precision"),
-        (None,      "─"*22,              None,               ""),
-        ("Semantic", "Coverage",         "coverage",         "reference recall proxy"),
-        ("Semantic", "Confidence",       "confidence",       "grounding score"),
-        (None,       "─"*22,             None,               ""),
-        ("LLM Judge","Faithfulness",     "faithfulness",     "no hallucinations"),
-        ("LLM Judge","Answer Relevance", "answer_relevance", "addresses question"),
-        ("LLM Judge","Context Relevance","context_relevance","retrieval quality"),
-        ("LLM Judge","Completeness",     "completeness",     "full coverage"),
-        ("LLM Judge","Citation Accuracy","citation_accuracy","citations verified"),
-        (None,       "─"*22,             None,               ""),
-        ("LLM Judge","Overall (wt.)",    "overall",          "weighted aggregate"),
+    rows = [
+        ("Lexical",   "ROUGE-1 F1",        "rouge1",           "surface token overlap"),
+        ("Lexical",   "ROUGE-L F1",        "rougeL",           "sequence overlap"),
+        ("Lexical",   "BLEU-1",            "bleu1",            "unigram precision"),
+        ("Lexical",   "BLEU-4",            "bleu4",            "4-gram precision"),
+        (None,        "─"*22,              None,               ""),
+        ("Semantic",  "Coverage",          "coverage",         "reference recall proxy"),
+        ("Semantic",  "Confidence",        "confidence",       "grounding score"),
+        (None,        "─"*22,              None,               ""),
+        ("LLM Judge", "Faithfulness",      "faithfulness",     "no hallucinations"),
+        ("LLM Judge", "Answer Relevance",  "answer_relevance", "addresses question"),
+        ("LLM Judge", "Context Relevance", "context_relevance","retrieval quality"),
+        ("LLM Judge", "Completeness",      "completeness",     "full coverage"),
+        ("LLM Judge", "Citation Accuracy", "citation_accuracy","citations verified"),
+        (None,        "─"*22,              None,               ""),
+        ("LLM Judge", "Overall (wt.)",     "overall",          "weighted aggregate"),
     ]
-    for tier, label, key, note in tiers:
+    for group, label, key, note in rows:
         if key is None:
-            print(f"  {'':8}  {label}")
+            print(f"  {'':10}  {label}")
             continue
         val = avg.get(key)
-        tier_str = tier or ""
-        print(f"  {tier_str:<8}  {label:<22}  {_fmt(val):>8}  {note}")
+        group_str = group or ""
+        print(f"  {group_str:<10}  {label:<22}  {_fmt(val):>8}  {note}")
     print(f"{'='*W}")
 
 
@@ -713,7 +718,7 @@ def save_csv(
 def main() -> None:
     global API_URL
     parser = argparse.ArgumentParser(
-        description="RAG evaluation — three-tier methodology (Lexical / Semantic / LLM-Judge)"
+        description="RAG evaluation — ROUGE/BLEU and LLM-as-a-Judge (run each one alone)"
     )
     parser.add_argument("--n",             type=int,   default=20,
                         help="Number of Q&A pairs to generate")
@@ -731,16 +736,23 @@ def main() -> None:
                         help="Skip the no-prompt ablation")
     parser.add_argument("--skip-nomem",    action="store_true",
                         help="Skip the no-memory ablation")
-    # ── Tier selection flags ──────────────────────────────────────────────────
-    parser.add_argument("--tier1-only",    action="store_true",
+    # ── Evaluation-mode flags ─────────────────────────────────────────────────
+    parser.add_argument("--rouge-bleu",    action="store_true",
                         help=(
-                            "Run Tier 1 only (ROUGE/BLEU + coverage). "
-                            "Calls /ask with judge=False — no LLM evaluation charges. "
-                            "~3–5× faster than the full pipeline."
+                            "Run ROUGE / BLEU evaluation only (lexical + coverage). "
+                            "Calls /ask with judge=False — no LLM evaluation charges."
+                        ))
+    parser.add_argument("--tier1-only",    action="store_true",
+                        help="Deprecated alias for --rouge-bleu (kept for back-compat).")
+    parser.add_argument("--judge-only",    action="store_true",
+                        help=(
+                            "Run LLM-as-a-Judge evaluation only. "
+                            "Calls /ask with judge=True; ROUGE/BLEU/coverage columns "
+                            "are written as N/A in the output CSV."
                         ))
     parser.add_argument("--from-csv",      type=str,   default="",
                         help=(
-                            "Recompute Tier 1 metrics from a previously saved eval CSV "
+                            "Recompute ROUGE / BLEU metrics from a previously saved eval CSV "
                             "(reads the 'full_answer' column). Zero API calls required."
                         ))
     args = parser.parse_args()
@@ -770,10 +782,10 @@ def main() -> None:
     n = len(testset)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TIER 1-ONLY PATH  (--tier1-only or --from-csv)
+    # ROUGE / BLEU PATH  (--rouge-bleu, --tier1-only alias, or --from-csv)
     # ══════════════════════════════════════════════════════════════════════════
-    if args.tier1_only or args.from_csv:
-        logger.info(f"[EVAL] Tier 1 only — {'loading answers from CSV' if args.from_csv else 'calling /ask (judge=False)'}")
+    if args.rouge_bleu or args.tier1_only or args.from_csv:
+        logger.info(f"[EVAL] ROUGE / BLEU evaluation — {'loading answers from CSV' if args.from_csv else 'calling /ask (judge=False)'}")
 
         if args.from_csv:
             # Zero API calls — read saved answers from a previous CSV
@@ -800,13 +812,13 @@ def main() -> None:
 
         avg_full = avg_results(full_res)
 
-        # Print Tier 1 table only
+        # Print lexical table only
         print("\n\n" + "█" * 70)
-        print("  RAG EVALUATION RESULTS  —  Tier 1: Lexical Baseline")
+        print("  RAG EVALUATION RESULTS  —  ROUGE / BLEU")
         print("█" * 70)
-        print_lexical_table(avg_full, title="Table 0 — Lexical Baseline (ROUGE / BLEU)")
+        print_lexical_table(avg_full, title="ROUGE / BLEU Lexical Metrics")
 
-        # Print interpretive note (Tier 3 unknown at this point, so omit gap)
+        # Print interpretive note
         r1 = avg_full.get("rouge1")
         rl = avg_full.get("rougeL")
         b1 = avg_full.get("bleu1")
@@ -817,17 +829,17 @@ def main() -> None:
   These lexical scores reflect surface token overlap with the reference answer.
   RAG systems generate grounded, paraphrased answers rather than copying the
   reference verbatim — low ROUGE/BLEU is expected and does NOT indicate poor
-  quality. Run without --tier1-only to get LLM-judge scores for comparison.
+  quality. Run with --judge-only to get LLM-as-a-Judge scores for comparison.
   ─────────────────────────────────────────────────────────────────────────────
 """)
 
-        # Save CSV (Tier 1 columns only)
+        # Save CSV
         save_csv(testset, full_res, None, None, path=args.csv)
 
         summary_path = args.csv.replace(".csv", "_summary.json")
         summary = {
             "n_questions": n,
-            "tier": "1 (lexical only)",
+            "mode": "rouge-bleu (lexical only)",
             "lexical_available": {"rouge": _ROUGE_AVAILABLE, "bleu": _BLEU_AVAILABLE},
             "full": {k: (round(v, 4) if v is not None else None)
                      for k, v in avg_full.items()},
@@ -842,7 +854,7 @@ def main() -> None:
         return   # ← done, skip the full pipeline below
 
     # ══════════════════════════════════════════════════════════════════════════
-    # FULL PIPELINE PATH  (all three tiers)
+    # JUDGE PATH  (judge-only OR combined lexical + judge)
     # ══════════════════════════════════════════════════════════════════════════
     lexical_note = (
         "ROUGE ✓  BLEU ✓" if (_ROUGE_AVAILABLE and _BLEU_AVAILABLE) else
@@ -850,21 +862,37 @@ def main() -> None:
         "ROUGE ✗ (install rouge-score)" if not _ROUGE_AVAILABLE else
         "BLEU ✗ (install nltk)"
     )
-    logger.info(f"[EVAL] Full pipeline ({n} questions)  |  {lexical_note}  |  sleep={args.sleep}s …")
+    if args.judge_only:
+        logger.info(f"[EVAL] LLM-as-a-Judge evaluation ({n} questions)  |  sleep={args.sleep}s …")
+    else:
+        logger.info(f"[EVAL] Combined evaluation ({n} questions)  |  {lexical_note}  |  sleep={args.sleep}s …")
 
     # ── 2. Full RAG ───────────────────────────────────────────────────────────
     full_res = []
     for i, item in enumerate(testset, 1):
-        result = _ask(item["question"], item["reference"], "full")
+        result = _ask(item["question"], item["reference"], "full",
+                      judge_only=args.judge_only)
         full_res.append(result)
-        logger.info(
-            f"[EVAL] full [{i}/{n}]  "
-            f"R1={_fmt(result.get('rouge1'))}  "
-            f"RL={_fmt(result.get('rougeL'))}  "
-            f"B1={_fmt(result.get('bleu1'))}  "
-            f"overall={_fmt(result.get('overall'))}  "
-            f"conf={_fmt(result.get('confidence'))}"
-        )
+        if args.judge_only:
+            logger.info(
+                f"[EVAL] full [{i}/{n}]  "
+                f"overall={_fmt(result.get('overall'))}  "
+                f"faith={_fmt(result.get('faithfulness'))}  "
+                f"ans_rel={_fmt(result.get('answer_relevance'))}  "
+                f"ctx_rel={_fmt(result.get('context_relevance'))}  "
+                f"comp={_fmt(result.get('completeness'))}  "
+                f"cite={_fmt(result.get('citation_accuracy'))}  "
+                f"conf={_fmt(result.get('confidence'))}"
+            )
+        else:
+            logger.info(
+                f"[EVAL] full [{i}/{n}]  "
+                f"R1={_fmt(result.get('rouge1'))}  "
+                f"RL={_fmt(result.get('rougeL'))}  "
+                f"B1={_fmt(result.get('bleu1'))}  "
+                f"overall={_fmt(result.get('overall'))}  "
+                f"conf={_fmt(result.get('confidence'))}"
+            )
         time.sleep(args.sleep)
 
     avg_full = avg_results(full_res)
@@ -875,7 +903,8 @@ def main() -> None:
     if not args.skip_noprompt:
         logger.info("[EVAL] Running no-prompt ablation …")
         for i, item in enumerate(testset, 1):
-            result = _ask(item["question"], item["reference"], "no_prompt")
+            result = _ask(item["question"], item["reference"], "no_prompt",
+                          judge_only=args.judge_only)
             noprompt_res.append(result)
             logger.info(f"[EVAL] no_prompt [{i}/{n}]  overall={_fmt(result.get('overall'))}")
             time.sleep(args.sleep)
@@ -887,7 +916,8 @@ def main() -> None:
     if not args.skip_nomem:
         logger.info("[EVAL] Running no-memory ablation …")
         for i, item in enumerate(testset, 1):
-            result = _ask(item["question"], item["reference"], "no_memory")
+            result = _ask(item["question"], item["reference"], "no_memory",
+                          judge_only=args.judge_only)
             nomem_res.append(result)
             logger.info(f"[EVAL] no_memory [{i}/{n}]  overall={_fmt(result.get('overall'))}")
             time.sleep(args.sleep)
@@ -895,12 +925,17 @@ def main() -> None:
 
     # ── 5. Print tables ───────────────────────────────────────────────────────
     print("\n\n" + "█" * 70)
-    print("  RAG EVALUATION RESULTS  —  Three-Tier Methodology")
+    if args.judge_only:
+        print("  RAG EVALUATION RESULTS  —  LLM-as-a-Judge")
+    else:
+        print("  RAG EVALUATION RESULTS  —  Combined (ROUGE / BLEU + LLM-as-a-Judge)")
     print("█" * 70)
 
-    print_lexical_table(avg_full, title="Table 0 — Lexical Baseline (ROUGE / BLEU)")
-    print_judge_table(avg_full, title="Table 1 — Full RAG System (LLM-as-a-Judge)")
-    print_three_tier_table(avg_full, title="Table 2 — Three-Tier Combined Summary (Full RAG)")
+    if not args.judge_only:
+        print_lexical_table(avg_full, title="ROUGE / BLEU Lexical Metrics")
+    print_judge_table(avg_full, title="LLM-as-a-Judge Dimension Scores")
+    if not args.judge_only:
+        print_three_tier_table(avg_full, title="Combined Summary (ROUGE / BLEU + LLM-as-a-Judge)")
 
     if avg_noprompt:
         print_comparison_table(
@@ -948,7 +983,7 @@ def main() -> None:
 
     summary = {
         "n_questions": n,
-        "tier": "1+2+3 (full)",
+        "mode": "judge-only" if args.judge_only else "combined (rouge-bleu + judge)",
         "lexical_available": {"rouge": _ROUGE_AVAILABLE, "bleu": _BLEU_AVAILABLE},
         "full": _round_dict(avg_full),
     }
@@ -960,7 +995,7 @@ def main() -> None:
     summary_path = args.csv.replace(".csv", "_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
-    logger.info(f"[EVAL] Summary → {summary_path}")
+    logger.info(f"[EVAL] Summary -> {summary_path}")
 
     print(f"\n  Output files:")
     print(f"    • {args.csv}")

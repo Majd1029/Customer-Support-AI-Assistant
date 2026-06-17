@@ -98,6 +98,11 @@ test.txt
 eval_results_summary.json
 eval_results.csv
 eval_testset.json
+langsmith_eval_log.csv
+figure2_system_arch.png
+Deploy.png
+JURY_PREP_pipeline_guide.md
+Customer_Support_AI_Assistant.pptx
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  RUNTIME OUTPUTS — generated at run time, not source
@@ -108,6 +113,7 @@ file_processor/results/
 file_processor/extracted_images/
 file_processor/images/
 file_processor/documents_for_test/
+images/
 
 # Crawl state (rebuilt automatically on restart)
 file_processor/crawl_history.json
