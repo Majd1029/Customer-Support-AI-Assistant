@@ -118,6 +118,29 @@ _RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
 # Strip Qwen3 (and other thinking-model) <think>...</think> blocks before JSON parse
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
+
+def _strip_think(raw: str) -> str:
+    """
+    Remove <think>...</think> reasoning blocks from a thinking-model response.
+
+    Tolerates three failure modes that the bare `_THINK_RE.sub` does not:
+      1. Properly closed <think>...</think> blocks   → stripped in full.
+      2. Unclosed <think> blocks (model truncated   → everything from <think>
+         before emitting </think>)                     onward is dropped.
+      3. Malformed closing tags (e.g. "< /think>",  → also caught by the
+         "</ think>", or HTML-escaped variants)        residual-<think> guard.
+
+    After stripping, leading and trailing whitespace is removed so the
+    downstream JSON parser sees only the JSON payload (if any).
+    """
+    cleaned = _THINK_RE.sub("", raw)
+    # Catch any straggler opening tag (unclosed or malformed closing)
+    lowered = cleaned.lower()
+    if "<think>" in lowered:
+        idx = lowered.find("<think>")
+        cleaned = cleaned[:idx]
+    return cleaned.strip()
+
 # Dimension weights -- the _compute_overall normalises by total active weight,
 # so these don't need to sum to 1.0. correctness only contributes when a
 # reference answer is provided; all others contribute when score is not None.
@@ -289,10 +312,15 @@ QUESTION
 ANSWER
 {answer}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 (entirely hallucinated) to 1.0 (fully grounded)
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means entirely hallucinated, 1.0 means fully grounded.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.85, "reasoning": "Most claims are supported but one revenue figure has no source in context."}}
@@ -312,10 +340,15 @@ QUESTION
 ANSWER
 {answer}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 to 1.0
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means the answer ignores the question, 1.0 means it fully addresses it.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.9, "reasoning": "The answer directly addresses the question with specific figures."}}
@@ -335,10 +368,15 @@ QUESTION
 CONTEXT
 {context}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 to 1.0
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means all chunks are off-topic, 1.0 means all chunks are highly relevant.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.75, "reasoning": "Most chunks are relevant but two discuss unrelated topics."}}
@@ -361,10 +399,15 @@ CONTEXT
 ANSWER
 {answer}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 (answer ignores most aspects) to 1.0 (fully complete)
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means the answer ignores most aspects, 1.0 means it fully covers them.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.6, "reasoning": "The answer covers revenue but omits the headcount figures present in context."}}
@@ -385,12 +428,17 @@ CONTEXT
 ANSWER
 {answer}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 (all citations wrong or absent) to 1.0 (all citations correct).
-                If there are NO [Source: ...] citations anywhere in ANSWER, return 0.0 —
-                citations are required and their absence is a failure.
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means all citations are wrong or absent, 1.0 means all citations are correct.
+- If there are NO [Source: ...] citations anywhere in ANSWER, return 0.0 — citations
+  are required and their absence is a failure.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 1.0, "reasoning": "All three citations map to chunks that directly support their claims."}}
@@ -414,10 +462,15 @@ REFERENCE ANSWER (ground truth)
 ANSWER (to evaluate)
 {answer}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 to 1.0
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means the answer contradicts the reference, 1.0 means it fully matches.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.8, "reasoning": "Answer is mostly correct but omits the YoY growth figure present in the reference."}}
@@ -437,10 +490,15 @@ QUESTION
 CHUNK [{chunk_idx}]
 {chunk}
 
-INSTRUCTIONS
-Return ONLY a JSON object with exactly these two keys:
-  "score"     : a float from 0.0 to 1.0
-  "reasoning" : one concise sentence explaining the score
+OUTPUT FORMAT
+Output ONLY a single JSON object with this exact schema:
+{{"score": <float in [0.0, 1.0]>, "reasoning": "<one sentence>"}}
+
+CRITICAL RULES
+- "score" MUST be a float between 0.0 and 1.0 (inclusive).
+- 0.0 means the chunk is completely off-topic, 1.0 means it is perfectly relevant.
+- Do NOT use a 1-5, 1-10, or 1-100 scale.
+- Do NOT output any text, commentary, or markdown before or after the JSON.
 
 Example output:
 {{"score": 0.9, "reasoning": "Chunk directly contains the revenue figures the question asks about."}}
@@ -479,8 +537,20 @@ def _call_judge(
             )
             raw = response.choices[0].message.content.strip()
 
-            # Strip <think>...</think> blocks (Qwen3 thinking mode)
-            raw = _THINK_RE.sub("", raw).strip()
+            # Strip <think>...</think> blocks (Qwen3 thinking mode).
+            # Uses the robust helper that also tolerates unclosed/malformed tags.
+            raw = _strip_think(raw)
+            if not raw:
+                # Pure unclosed <think> with no JSON payload — surface cleanly
+                logger.warning(
+                    f"[JUDGE] {dimension}: empty response after stripping "
+                    f"<think> block (model truncated or refused to emit JSON)"
+                )
+                return DimensionScore(
+                    score     = None,
+                    reasoning = "Empty response after <think> strip",
+                    dimension = dimension,
+                )
 
             # Strip markdown code fences if the model wraps its JSON
             raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
