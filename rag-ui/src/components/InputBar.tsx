@@ -182,11 +182,15 @@ export default function InputBar({
 
       // ── 2. Poll GET /tasks/{job_id} until extraction is complete ───────────
       let resultFile: string;
+      // True when the background worker already embedded the chunks (normal
+      // files are auto-indexed during extraction), or when the file is a CSV
+      // import (never vector-indexed). Either way we skip POST /index below.
+      let alreadyIndexed = false;
 
       if (uploadData.job_id) {
         setUpload({ state: 'processing', filename: file.name });
 
-        resultFile = await new Promise<string>((resolve, reject) => {
+        const done = await new Promise<{ resultFile: string; alreadyIndexed: boolean }>((resolve, reject) => {
           const poll = async () => {
             try {
               const pollRes = await fetch(`${API_URL}/tasks/${uploadData.job_id}`);
@@ -203,14 +207,20 @@ export default function InputBar({
                 status:       string;
                 result_file?: string;
                 error?:       string;
+                stats?:       { indexed?: number; type?: string };
               };
 
               if (job.status === 'done') {
-                // Resolve with result_file (may be empty string if worker
-                // already auto-indexed — that's fine, we skip POST /index below)
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
-                resolve(job.result_file ?? '');
+                // The worker auto-indexes during extraction (stats.indexed > 0),
+                // and CSV imports (stats.type === 'csv_import') are never indexed,
+                // so in both cases skip the redundant POST /index below.
+                const indexed = job.stats?.indexed ?? 0;
+                resolve({
+                  resultFile:     job.result_file ?? '',
+                  alreadyIndexed: indexed > 0 || job.stats?.type === 'csv_import',
+                });
               } else if (job.status === 'failed') {
                 clearInterval(pollIntervalRef.current!);
                 pollIntervalRef.current = null;
@@ -227,6 +237,9 @@ export default function InputBar({
           void poll();
         });
 
+        resultFile     = done.resultFile;
+        alreadyIndexed = done.alreadyIndexed;
+
       } else if (uploadData.result_file) {
         // Server responded synchronously (shouldn't happen with async_mode=true,
         // but handle gracefully so we don't break if the API changes).
@@ -237,9 +250,10 @@ export default function InputBar({
       }
 
       // ── 3. Embed + index the extracted chunks into Qdrant ──────────────────
-      // When using Celery (async path), the worker already auto-indexed during
-      // extraction.  result_file is empty in that case — skip the redundant call.
-      if (resultFile) {
+      // Skip when the background worker already auto-indexed during extraction,
+      // or when there's no result file (CSV imports / empty result). This avoids
+      // a redundant re-embed of every chunk and the 422 that CSV results returned.
+      if (resultFile && !alreadyIndexed) {
         setUpload({ state: 'indexing', filename: file.name });
         const indexRes = await fetch(`${API_URL}/index`, {
           method:  'POST',

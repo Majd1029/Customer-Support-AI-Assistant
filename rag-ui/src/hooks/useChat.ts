@@ -326,6 +326,103 @@ export function useChat(userId: string, userToken: string = '', onAuthError?: ()
         const askHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
         if (tokenRef.current) askHeaders['Authorization'] = `Bearer ${tokenRef.current}`;
 
+
+        // ── CSV path: route to the CSV query engine, not the vector RAG endpoint ──
+        // CSV uploads live in a SQL-like table (queried via POST /query), not Qdrant,
+        // so /ask/stream would always retrieve 0 chunks and return an empty answer.
+        // When the active scope is a .csv file, query the CSV engine directly.
+        // This endpoint is non-streaming: it returns a single JSON answer.
+        const isCsvScope =
+          scope.mode === 'specific' && !!scope.doc && /\.csv$/i.test(scope.doc);
+
+        if (isCsvScope) {
+          const t0 = performance.now();
+
+          // Resolve the exact CSV table for the selected file. The engine's
+          // auto-detect (table: null) breaks down once many tables are registered,
+          // so we match the table the file was imported as. Backend names tables by
+          // slugifying the filename stem: "test123.csv" -> "test123", optionally
+          // prefixed with "<uid>_" (or "t_<uid>_" when the uid starts with a digit),
+          // so we match an exact name or a "*_<stem>" suffix.
+          let csvTable: string | null = null;
+          try {
+            const tblRes = await fetch(`${API_URL}/csv-tables`, { headers: askHeaders });
+            if (tblRes.ok) {
+              const tbl = (await tblRes.json()) as { tables?: string[] };
+              const stem = scope.doc!
+                .replace(/\.[^.]*$/, '')      // strip extension
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')   // mirror backend _slugify
+                .replace(/^_+|_+$/g, '');
+              const tables = tbl.tables ?? [];
+              csvTable =
+                tables.find(t => t.toLowerCase() === stem)
+                ?? tables.find(t => t.toLowerCase() === 't_' + stem)
+                ?? tables.find(t => t.toLowerCase().endsWith('_' + stem))
+                ?? null;
+            }
+          } catch {
+            // Network error resolving the table — fall back to auto-detect below.
+          }
+
+          const csvRes = await fetch(`${API_URL}/query`, {
+            method:  'POST',
+            headers: askHeaders,
+            signal:  controller.signal,
+            // Explicit table when resolved; null lets the backend auto-detect.
+            body: JSON.stringify({ question: input, table: csvTable }),
+          });
+
+          if (!csvRes.ok) {
+            const msg = await friendlyFetchError(csvRes);
+            updateMessage(assistantId, m => ({ ...m, streaming: false, error: msg }));
+            return;
+          }
+
+          const data = (await csvRes.json()) as {
+            answer?:  string;
+            success?: boolean;
+            error?:   string | null;
+            table?:   string | null;
+          };
+          const elapsed = Math.round(performance.now() - t0);
+
+          // The CSV engine always returns a user-facing `answer` string — even
+          // when the generated query failed or the table couldn't be auto-detected,
+          // the answer explains the problem in plain language. So only treat a
+          // genuinely empty answer (or a failed HTTP call, handled above) as an
+          // error; otherwise display whatever the engine produced.
+          if (!data.answer) {
+            updateMessage(assistantId, m => ({
+              ...m,
+              streaming: false,
+              error: friendlyError(500, data.error ?? '')
+                || '⚠️ Could not answer from the CSV. Try rephrasing your question.',
+            }));
+            return;
+          }
+
+          updateMessage(assistantId, m => ({
+            ...m,
+            streaming: false,
+            content:   data.answer as string,
+            metadata: {
+              confidence:        null,
+              retrievalMs:       elapsed,
+              generationMs:      null,
+              citationCount:     null,
+              noAnswer:          false,
+              hops:              1,
+              rewrittenQuery:    null,
+              rewriteTier:       null,
+              verdict:           null,
+              feedback:          null,
+              escalationMessage: null,
+              rating:            0,
+            },
+          }));
+          return;
+        }
         const response = await fetch(`${API_URL}/ask/stream`, {
           method:  'POST',
           headers: askHeaders,

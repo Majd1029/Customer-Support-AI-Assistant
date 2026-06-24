@@ -419,8 +419,12 @@ BASE_DIR    = Path(__file__).parent
 UPLOAD_DIR  = BASE_DIR / "uploads"
 IMAGES_DIR  = BASE_DIR / "extracted_images"
 RESULTS_DIR = BASE_DIR / "results"
+# Persistent store for imported CSVs. The CSV query engine re-reads the source
+# file on demand (query_table loads it just-in-time), so the uploaded CSV must
+# outlive the temporary upload file — which is deleted right after import.
+CSV_STORE_DIR = BASE_DIR / "csv_store"
 
-for d in (UPLOAD_DIR, IMAGES_DIR, RESULTS_DIR):
+for d in (UPLOAD_DIR, IMAGES_DIR, RESULTS_DIR, CSV_STORE_DIR):
     d.mkdir(exist_ok=True)
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -864,7 +868,20 @@ def _process_upload_background(
                 dest.unlink(missing_ok=True)
                 return
             try:
-                table_name = _csv_import(str(dest))
+                # The query engine re-reads the source CSV on demand, so copy it
+                # to a persistent location BEFORE the temp upload file is deleted.
+                #
+                # Use a STABLE filename derived from owner + original name (no random
+                # upload id), so re-uploading the same file overwrites in place and
+                # registers the SAME table (import_csv does ON CONFLICT DO UPDATE)
+                # instead of accumulating a new "<uid>_name" table on every upload.
+                owner_tag = "".join(
+                    c if c.isalnum() else "_" for c in (owner_id or "anon")
+                ).strip("_") or "anon"
+                csv_persist = CSV_STORE_DIR / f"{owner_tag}_{original_name}"
+                shutil.copy2(dest, csv_persist)
+
+                table_name = _csv_import(str(csv_persist))
                 info       = _csv_table_info(table_name)
                 data = {
                     "type"       : "csv_import",
@@ -878,10 +895,13 @@ def _process_upload_background(
                 result_path     = RESULTS_DIR / result_filename
                 result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
                 _job_update(job_id, status="done", result_file=result_filename,
-                            stats={"type": "csv_import", "rows": data["rows"], "cols": data["cols"]})
+                            stats={"type": "csv_import", "table": table_name,
+                                   "rows": data["rows"], "cols": data["cols"]})
             except Exception as e:
                 _job_update(job_id, status="failed", error=str(e))
             finally:
+                # Only the temporary upload file is removed; csv_persist remains
+                # so the table can be queried later.
                 dest.unlink(missing_ok=True)
             return
 
@@ -2229,10 +2249,20 @@ async def index_document(req: IndexRequest):
         raise HTTPException(status_code=500, detail=f"Failed to read result file: {e}")
 
     if doc.get("type") == "csv_import":
-        raise HTTPException(
-            status_code=422,
-            detail="CSV import results are not indexed as vectors — use POST /query instead.",
-        )
+        # CSV uploads are stored in the CSV query engine (queried via POST /query),
+        # not embedded into Qdrant. This is expected, not an error — return 200 with
+        # a "skipped" status so callers (React UI / curl / legacy UI) don't surface a
+        # failure for a perfectly successful CSV import.
+        return JSONResponse(content={
+            "result_file":  req.result_file,
+            "source":       doc.get("source_file", req.result_file),
+            "collection":   req.collection,
+            "indexed":      0,
+            "skipped":      "csv_import",
+            "total_chunks": 0,
+            "table":        doc.get("table"),
+            "detail":       "CSV import — queried via POST /query, not vector-indexed.",
+        })
 
     chunks = doc.get("chunks", [])
     if not chunks:
