@@ -1,6 +1,6 @@
 # Customer Support AI Assistant
 
-An enterprise-grade Retrieval-Augmented Generation (RAG) pipeline for intelligent customer support, built as a master's thesis project. The system combines hybrid dense/sparse retrieval, a multi-intent classifier, LangGraph-orchestrated agents, and an LLM-as-a-Judge evaluation framework — all served through a FastAPI backend and a React/TypeScript frontend.
+An enterprise-grade Retrieval-Augmented Generation (RAG) pipeline for intelligent customer support, built as a master's thesis project. The system combines hybrid dense/sparse retrieval, a multi-intent classifier, LangGraph-orchestrated agents, and an LLM-as-a-Judge evaluation framework, all served through a FastAPI backend and a React/TypeScript frontend.
 
 ---
 
@@ -23,7 +23,7 @@ An enterprise-grade Retrieval-Augmented Generation (RAG) pipeline for intelligen
 
 ## Overview
 
-This system ingests enterprise knowledge bases (PDFs, Word documents, PowerPoint files, spreadsheets, scanned images, and more), indexes them into a hybrid vector + sparse store, and answers customer queries through a multi-stage RAG pipeline. A 7-intent classifier routes each query to the most appropriate handler — whether that is a vector retrieval chain, a CSV/structured-data query engine, or a fallback LLM response.
+This system ingests enterprise knowledge bases (PDFs, Word documents, PowerPoint files, spreadsheets, scanned images, and more), indexes them into a hybrid vector + sparse store, and answers customer queries through a multi-stage RAG pipeline. A 7-intent classifier routes each query to the most appropriate handler, whether that is a vector retrieval chain, a CSV/structured-data query engine, or a fallback LLM response.
 
 ---
 
@@ -254,14 +254,3 @@ pytest tests/ -v
 ```
 
 Async tests are supported via `pytest-asyncio`.
-
----
-
-## Known Limitations
-
-- `transformers` must be pinned below `5.0.0` to avoid conflicts with `sentence-transformers` (used by the Jina reranker). See `requirements.txt` for the pinned range.
-- `protobuf` must be `≤ 3.20.2` for compatibility with `qdrant-client ≥ 1.9`.
-- OCR quality depends on the local Ollama/Gemma 4 model. For production-grade OCR on complex scanned documents, a higher-capacity model is recommended.
-- The CSV query engine executes Groq-generated pandas code inside a RestrictedPython sandbox. Complex or deeply nested queries may occasionally produce incorrect pandas expressions; always validate results on critical data.
-
----
