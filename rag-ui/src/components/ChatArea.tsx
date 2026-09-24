@@ -65,7 +65,7 @@ export default function ChatArea({ messages, isStreaming, onExampleClick, userna
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
-function EmptyState({ onExampleClick }: { onExampleClick: (q: string) => void }) {
+function EmptyState(_props: { onExampleClick: (q: string) => void }) {
   return (
     <div
       className="flex flex-col items-center justify-center min-h-full px-6 py-16 text-center"
