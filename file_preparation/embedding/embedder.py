@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -20,7 +21,8 @@ from typing import NamedTuple
 from loguru import logger
 
 # ── Model constants ───────────────────────────────────────────────────────────
-_MODEL_NAME        = "BAAI/bge-m3"
+# EMBEDDING_MODEL can point to a local directory (e.g. the copy baked into the Docker image)
+_MODEL_NAME        = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 _DENSE_DIM         = 1024
 _BATCH_SIZE_CPU    = 8    # safe for CPU inference
 _BATCH_SIZE_GPU    = 32   # safe for GPU inference (raise to 64 with ≥16 GB VRAM)

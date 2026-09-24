@@ -1,12 +1,12 @@
 # Backend image for the FastAPI RAG server.
-# Built for Hugging Face Docker Spaces (port 7860, non-root uid 1000) but runs
-# anywhere:  docker build -t support-api . && docker run -p 7860:7860 --env-file .env support-api
+# Deployed to Google Cloud Run (see DEPLOYMENT.md) but runs anywhere:
+#   docker build -t support-api . && docker run -p 8080:8080 --env-file .env support-api
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PORT=7860
+    PORT=8080
 
 # poppler-utils: pdf2image (scanned-PDF OCR); libgl/libglib: image libs used by parsers
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,10 +24,16 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Bake BGE-M3 (~2.3 GB) into the image so cold starts don't re-download it.
+# Downloaded to a plain directory (not the HF cache) and selected via EMBEDDING_MODEL, because
+# FlagEmbedding re-runs snapshot_download for hub names and would fetch the ONNX weights too.
+ENV EMBEDDING_MODEL=/home/user/models/bge-m3
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-m3', local_dir='$EMBEDDING_MODEL', ignore_patterns=['onnx/*', '*.onnx*', 'imgs/*', '*.jpg'])" \
+    && rm -rf "$EMBEDDING_MODEL/.cache" && chown -R user:user /home/user/models
+
 COPY --chown=user . .
-RUN pip install --no-deps -e . && chown -R user:user /home/user
+RUN pip install --no-deps -e . && chown -R user:user /home/user/app
 
 USER user
-EXPOSE 7860
-HEALTHCHECK --interval=60s --timeout=10s --start-period=180s CMD python -c "import urllib.request,os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\",\"7860\")}/supported-formats')"
+EXPOSE 8080
 CMD ["sh", "-c", "uvicorn file_processor.api:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
