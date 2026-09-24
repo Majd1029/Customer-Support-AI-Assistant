@@ -34,7 +34,7 @@ __editable__*
 # ─────────────────────────────────────────────────────────────────────────────
 .env
 .env.*
-!.env.example          # keep the example template
+!.env.example
 *.env.local
 *.env.production
 *.env.staging
@@ -163,7 +163,7 @@ rag-ui/dist/
 rag-ui/.env
 rag-ui/.env.local
 rag-ui/.env.production
-!rag-ui/.env.example    # keep the example
+!rag-ui/.env.example
 rag-ui/.vite/
 rag-ui/coverage/
 

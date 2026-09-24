@@ -430,11 +430,15 @@ for d in (UPLOAD_DIR, IMAGES_DIR, RESULTS_DIR, CSV_STORE_DIR):
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Document Extraction API")
 
-# CORS — required when the React UI (http://localhost:5173) talks to this server.
-# In production, replace allow_origins with your actual deployed frontend URL.
+# CORS — required when the React UI talks to this server from another origin.
+# In production, set CORS_ORIGINS (comma-separated) and/or FRONTEND_URL to the
+# deployed frontend URL(s); CORS_ORIGIN_REGEX can match e.g. Vercel previews.
+_CORS_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000", FRONTEND_URL.rstrip("/")}
+_CORS_ORIGINS.update(o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip())
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"],
+    allow_origins=sorted(_CORS_ORIGINS),
+    allow_origin_regex=os.getenv("CORS_ORIGIN_REGEX") or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
