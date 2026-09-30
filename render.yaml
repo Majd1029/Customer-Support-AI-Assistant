@@ -1,0 +1,41 @@
+# Render Blueprint — lightweight backend on the free plan (512 MB).
+# Render → New → Blueprint → pick this repo; it prompts for every `sync: false` value.
+# See DEPLOYMENT.md ("Free deployment without a card").
+services:
+  - type: web
+    name: support-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    plan: free
+    region: frankfurt
+    healthCheckPath: /supported-formats
+    autoDeploy: true
+    envVars:
+      - key: EMBEDDING_BACKEND
+        value: hf_api
+      - key: HF_TOKEN
+        sync: false
+      - key: JINA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PG_HOST
+        sync: false
+      - key: PG_PORT
+        value: "5432"
+      - key: PG_DB
+        value: postgres
+      - key: PG_USER
+        sync: false
+      - key: PG_PASSWORD
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGIN_REGEX
+        value: https://.*\.vercel\.app

@@ -5,7 +5,7 @@ Production setup, running on free tiers:
 | Component | Host | Notes |
 |---|---|---|
 | React UI (`rag-ui/`) | **Vercel** | Static Vite build, `rag-ui/vercel.json` |
-| FastAPI backend | **Google Cloud Run** | `Dockerfile`, deployed by `.github/workflows/deploy-cloud-run.yml` |
+| FastAPI backend | **Render** (free, no card) *or* **Google Cloud Run** (needs billing) | see "Two backend options" below |
 | PostgreSQL | **Supabase** | Tables are created automatically on first use |
 | Vector store | **Qdrant Cloud** | Free 1 GB cluster |
 | Redis (optional) | Upstash | Only needed for multi-worker memory |
@@ -13,6 +13,22 @@ Production setup, running on free tiers:
 Ollama isn't needed on these hosts. Answer generation and scanned-PDF/image
 OCR both use Groq first (`GROQ_API_KEY`, or the per-task `GROQ_*_API_KEY`
 overrides) and only fall back to Ollama when no key is set.
+
+### Two backend options
+
+| | **3a. Render free** (lightweight) | **3b. Google Cloud Run** (full) |
+|---|---|---|
+| Card / billing account | Not needed | Needed |
+| Image | `Dockerfile.render` + `requirements-render.txt` | `Dockerfile` + `requirements.txt` |
+| BGE-M3 embeddings | Hugging Face Inference API (`EMBEDDING_BACKEND=hf_api`) | Loaded in-process (BGE-M3 baked into the image) |
+| Reranker | Jina API (`JINA_API_KEY`) | Jina API, or the local cross-encoder |
+| Memory | ~260 MB (fits 512 MB) | 4 GiB |
+| Idle behaviour | Sleeps after 15 min; ~50 s to wake | Scales to zero; ~30–60 s to start |
+
+Both use the same code: `file_preparation/embedding/backend.py` picks
+`embedder.py` (local) or `remote_embedder.py` (API) from `EMBEDDING_BACKEND`.
+Dense vectors come from the same BGE-M3 model either way, so moving between
+the two later doesn't require re-indexing documents.
 
 ---
 
@@ -32,8 +48,40 @@ overrides) and only fall back to Ollama when no key is set.
 2. `QDRANT_URL` = the cluster endpoint **with `:6333`**, e.g.
    `https://xxxx.eu-central-1-0.aws.cloud.qdrant.io:6333`.
 3. Create an API key → `QDRANT_API_KEY`.
+4. To start from an empty store (every user then uploads their own documents),
+   with `QDRANT_URL` / `QDRANT_API_KEY` in a local `.env`:
+   ```bash
+   python scripts/reset_qdrant.py            # dry run: lists collections and counts
+   python scripts/reset_qdrant.py --confirm  # deletes them
+   ```
+   Collections are recreated automatically on the next upload. Users only see
+   their own uploads plus documents an admin uploaded to the shared knowledge base.
 
-## 3. Backend — Google Cloud Run
+## 3a. Backend — Render (free, no card)
+
+1. **Hugging Face token** (embeddings): <https://huggingface.co/settings/tokens>
+   → *Create new token* → *Fine-grained* → tick **"Make calls to Inference
+   Providers"** → copy it (`HF_TOKEN`). The free monthly allowance covers light
+   demo use; if it runs out, uploads and questions fail with an embedding error
+   until the next month.
+2. **Jina API key** (reranker): <https://jina.ai/> → *API* → copy the free key
+   (`JINA_API_KEY`). Without it the backend skips reranking; it would not have
+   the memory to load the local reranker.
+3. **Render**: sign up at <https://render.com> with GitHub → **New → Blueprint**
+   → pick this repo (and the branch to deploy). Render reads `render.yaml` and
+   asks for each secret: `HF_TOKEN`, `JINA_API_KEY`, `GROQ_API_KEY`, the Supabase
+   `PG_HOST` / `PG_USER` / `PG_PASSWORD`, `QDRANT_URL` / `QDRANT_API_KEY`, and
+   `FRONTEND_URL` (put your Vercel URL here once step 4 is done).
+   `JWT_SECRET` is generated automatically.
+4. The first build takes ~5–10 minutes. The service URL looks like
+   `https://support-api-xxxx.onrender.com`; check `…/health`. Ollama showing
+   "down" there is expected. Every push to the deployed branch redeploys.
+
+Free-plan limits: 512 MB RAM and a small CPU share. Very large uploads (e.g.
+PDFs with hundreds of pages) may be slow or run out of memory. Uploaded files
+live on temporary disk; documents and chats persist in Qdrant and Postgres.
+
+## 3b. Backend — Google Cloud Run (needs billing)
 
 ### One-time Google Cloud setup
 
@@ -109,8 +157,8 @@ are lost when it scales down. Durable data lives in Postgres and Qdrant.
 
 1. <https://vercel.com/new> → import this GitHub repo.
 2. **Root Directory**: `rag-ui` (Vite is auto-detected).
-3. Environment variable `VITE_API_URL` = your Cloud Run URL (no trailing slash).
-4. Deploy, then set the resulting URL as `FRONTEND_URL` on the Cloud Run service.
+3. Environment variable `VITE_API_URL` = your backend URL (Render or Cloud Run, no trailing slash).
+4. Deploy, then set the resulting URL as `FRONTEND_URL` on the backend service.
 
 ## 5. First admin user
 
@@ -124,7 +172,7 @@ python scripts/create_admin.py
 
 Add `https://<service-url>/auth/google/callback` as an authorized redirect URI in
 Google Cloud Console, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
-`GOOGLE_REDIRECT_URI` on the Cloud Run service.
+`GOOGLE_REDIRECT_URI` on the backend service.
 
 ---
 
@@ -136,4 +184,9 @@ docker run -p 8080:8080 --env-file .env support-api
 ```
 
 Any container host with about 4 GB of RAM works. Set `PORT` if the platform expects
-a different port.
+a different port. For small hosts, use the lightweight image instead:
+
+```bash
+docker build -f Dockerfile.render -t support-api-lite .
+docker run -p 10000:10000 --env-file .env support-api-lite   # needs HF_TOKEN, JINA_API_KEY
+```

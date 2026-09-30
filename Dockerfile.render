@@ -1,0 +1,32 @@
+# Lightweight backend image for 512 MB hosts (Render free tier).
+# Embeddings come from the Hugging Face Inference API (EMBEDDING_BACKEND=hf_api)
+# and reranking from the Jina API (JINA_API_KEY), so no PyTorch or local models
+# are installed. The full local-model image is ./Dockerfile (Cloud Run).
+#   docker build -f Dockerfile.render -t support-api-lite .
+#   docker run -p 10000:10000 --env-file .env support-api-lite
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=10000 \
+    EMBEDDING_BACKEND=hf_api
+
+# poppler-utils: pdf2image (scanned-PDF OCR); libgl/libglib: image libs used by parsers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        poppler-utils libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 user
+ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
+WORKDIR /home/user/app
+
+COPY requirements-render.txt .
+RUN pip install -r requirements-render.txt
+
+COPY --chown=user . .
+RUN pip install --no-deps -e . && chown -R user:user /home/user/app
+
+USER user
+EXPOSE 10000
+CMD ["sh", "-c", "uvicorn file_processor.api:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
