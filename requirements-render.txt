@@ -1,3 +1,8 @@
+# Lightweight backend requirements for 512 MB hosts (Render free tier).
+# Same as requirements.txt minus the local ML stack (FlagEmbedding, sentence-transformers,
+# transformers → PyTorch). Use with EMBEDDING_BACKEND=hf_api and JINA_API_KEY (hosted reranker).
+# The full local-model setup stays in requirements.txt / Dockerfile.
+
 # ── Parsing ───────────────────────────────────────────────────────────────────
 markitdown[docx,pptx]>=0.1.0
 pypdf==5.1.0
@@ -41,9 +46,6 @@ pandas>=2.2.0
 restrictedpython>=7.0
 
 # ── Embedding — BGE-M3 ────────────────────────────────────────────────────────
-FlagEmbedding>=1.2.9
-huggingface_hub>=0.22.0
-SentencePiece>=0.2.0
 
 # ── Vector store ──────────────────────────────────────────────────────────────
 # <1.19: 1.19 removed NamedSparseVector, which indexing/store.py imports
@@ -55,8 +57,6 @@ rank-bm25>=0.2.2
 
 # ── Reranking (Jina cross-encoder) ────────────────────────────────────────────
 # Pin transformers <5 to avoid sentence-transformers conflict (see CLAUDE.md §Known Limitations)
-sentence-transformers>=3.0.0
-transformers>=4.40.0,<5.0.0
 
 # ── Protobuf (must be >=4 for qdrant-client 1.9+) ────────────────────────────
 protobuf<=3.20.2
@@ -72,9 +72,6 @@ tenacity>=9.0.0
 # ── Editable install & testing ────────────────────────────────────────────────
 # Run once after cloning: pip install -e .  (installs the project as an editable
 # package so `from file_preparation.X import Y` works from any directory)
-setuptools>=68
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
 python-multipart>=0.0.28
 
 # ── Redis (optional — enables multi-worker conversation buffer) ───────────────

@@ -71,7 +71,7 @@ except Exception as _qe:
     logger.warning(f"[SEM_MEM] Qdrant unavailable ({_qe}) — semantic memory disabled.")
 
 try:
-    from file_preparation.embedding.embedder import encode_query, encode  # type: ignore[import]
+    from file_preparation.embedding.backend import encode_query, encode  # type: ignore[import]
     _encode_query_fn    = encode_query
     _encode_fn          = encode
     _EMBEDDER_AVAILABLE = True

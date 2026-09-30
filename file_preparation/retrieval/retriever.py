@@ -63,7 +63,7 @@ from typing import Any
 
 from loguru import logger
 
-from file_preparation.embedding.embedder     import encode_query                      # type: ignore[import]
+from file_preparation.embedding.backend      import encode_query                      # type: ignore[import]
 from file_preparation.retrieval.bm25_encoder import bm25_encode_query                 # type: ignore[import]
 from file_preparation.indexing.store         import (                                  # type: ignore[import]
     search,
