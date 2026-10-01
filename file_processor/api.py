@@ -161,7 +161,12 @@ try:
     )
     # Cache a single client instance — reused across all requests
     _qdrant_client = _emb_get_client()
-    _qdrant_client.get_collections()   # verify connectivity at startup
+    _startup_collections = {c.name for c in _qdrant_client.get_collections().collections}  # verifies connectivity
+    # Backfill payload indexes on existing collections (Qdrant Cloud rejects
+    # filters such as owner_id on unindexed fields).
+    from file_preparation.indexing.store import ensure_payload_indexes as _emb_ensure_indexes
+    if _EMB_DEFAULT_COLLECTION in _startup_collections:
+        _emb_ensure_indexes(_qdrant_client, _EMB_DEFAULT_COLLECTION)
     EMBEDDING_ENABLED = True
 except Exception as _emb_err:
     import traceback
@@ -717,8 +722,24 @@ async def health():
                     "https://api.groq.com/openai/v1/models",
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
-            return {"status": "ok"} if r.status_code == 200 else \
-                   {"status": "down", "error": f"HTTP {r.status_code}"}
+            if r.status_code != 200:
+                return {"status": "down", "error": f"HTTP {r.status_code}"}
+            # Flag configured models this key can't use (Groq retires models over time).
+            available = sorted(m.get("id", "") for m in r.json().get("data", []))
+            try:
+                from file_preparation.generation.answer_generator import _GROQ_MODEL_DEFAULT as _gen_default
+            except Exception:
+                _gen_default = "meta-llama/llama-4-scout-17b-16e-instruct"
+            configured = {
+                "generation (GROQ_GENERATION_MODEL)": os.getenv("GROQ_GENERATION_MODEL", _gen_default),
+                "memory (GROQ_MEMORY_MODEL)":         os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b"),
+                "judge (JUDGE_MODEL)":                os.getenv("JUDGE_MODEL", "qwen/qwen3-32b"),
+                "ocr (GROQ_OCR_MODEL)":               os.getenv("GROQ_OCR_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            }
+            missing = {k: v for k, v in configured.items() if v not in available}
+            if not missing:
+                return {"status": "ok"}
+            return {"status": "ok", "unavailable_models": missing, "available_models": available}
         except Exception as e:
             return {"status": "down", "error": str(e)}
 
