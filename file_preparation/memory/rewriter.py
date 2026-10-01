@@ -40,6 +40,7 @@ Usage
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -101,7 +102,7 @@ _STOPWORDS: set[str] = {
 }
 
 # Model used for Tier-2 LLM rewriting via Groq
-_REWRITE_MODEL = "qwen/qwen3-32b"
+_REWRITE_MODEL = os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b")  # override if Groq retires the model
 _MAX_TOKENS    = 256   # short — we only need a single rewritten sentence
 _TEMPERATURE   = 0.0   # deterministic
 

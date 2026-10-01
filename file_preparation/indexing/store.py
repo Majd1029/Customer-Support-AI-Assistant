@@ -108,7 +108,13 @@ UPSERT_BATCH     = 64            # points per upsert call
 
 # Payload fields that get Qdrant keyword indexes for fast filtered search.
 # doc_id is included so scroll/filter by document GUID is O(log n).
-_INDEXED_PAYLOAD_FIELDS = ["source", "language", "type", "doc_id"]
+# owner_id / owner_email / drive_file_id / allowed_users carry RBAC metadata that
+# /ask and /search filter on. Qdrant Cloud rejects filters on unindexed fields
+# ("Index required but not found"), so every filtered field must be listed here.
+_INDEXED_PAYLOAD_FIELDS = [
+    "source", "language", "type", "doc_id",
+    "owner_id", "owner_email", "drive_file_id", "allowed_users",
+]
 
 # Payload fields that get Qdrant integer indexes (used in range filters)
 _INDEXED_INTEGER_FIELDS = ["chunk_index"]
@@ -177,7 +183,8 @@ def ensure_collection(
       • "sparse" — SparseVectorParams(modifier=Modifier.IDF) [BM25 TF weights;
                    IDF applied server-side when Modifier.IDF is available]
 
-    Payload indexes are created on: source, language, type.
+    Payload indexes are created on the fields in _INDEXED_PAYLOAD_FIELDS /
+    _INDEXED_INTEGER_FIELDS — including for collections that already exist.
     These allow fast filtered search without full payload scans.
 
     Args:
@@ -195,6 +202,8 @@ def ensure_collection(
             client.delete_collection(name)
         else:
             logger.debug(f"  Collection '{name}' already exists — skipping creation.")
+            # Older collections may predate fields added to the index lists.
+            ensure_payload_indexes(client, name)
             return
 
     client.create_collection(
@@ -211,7 +220,24 @@ def ensure_collection(
     )
     logger.info(f"  Collection '{name}' created (dense={DENSE_DIM}d + sparse).")
 
-    # Create payload indexes for fast filtered search.
+    ensure_payload_indexes(client, name, force=True)
+
+
+# Collections whose payload indexes were already ensured by this process.
+_INDEXES_ENSURED: set[str] = set()
+
+
+def ensure_payload_indexes(client: "QdrantClient", name: str = COLLECTION_NAME, *, force: bool = False) -> None:
+    """
+    Create the keyword / integer payload indexes used by filtered search.
+
+    Idempotent: Qdrant accepts re-creating an existing index, and each collection
+    is only processed once per process unless ``force`` is set. Needed for
+    existing collections too — Qdrant Cloud refuses filters on unindexed fields.
+    """
+    if name in _INDEXES_ENSURED and not force:
+        return
+
     # Without these, Qdrant does a full collection scan for every filter.
     for field in _INDEXED_PAYLOAD_FIELDS:
         try:
@@ -220,7 +246,7 @@ def ensure_collection(
                 field_name=field,
                 field_schema=PayloadSchemaType.KEYWORD,
             )
-            logger.debug(f"  Payload index created: '{field}' on '{name}'.")
+            logger.debug(f"  Payload index ensured: '{field}' on '{name}'.")
         except Exception as e:
             logger.warning(f"  Could not create payload index for '{field}': {e}")
 
@@ -232,9 +258,11 @@ def ensure_collection(
                 field_name=field,
                 field_schema=PayloadSchemaType.INTEGER,
             )
-            logger.debug(f"  Integer payload index created: '{field}' on '{name}'.")
+            logger.debug(f"  Integer payload index ensured: '{field}' on '{name}'.")
         except Exception as e:
             logger.warning(f"  Could not create integer payload index for '{field}': {e}")
+
+    _INDEXES_ENSURED.add(name)
 
 
 # ── Point helpers ─────────────────────────────────────────────────────────────
