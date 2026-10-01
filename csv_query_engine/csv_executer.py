@@ -51,7 +51,7 @@ load_dotenv()
 # GROQ_CSV_API_KEY — dedicated key for NL→SQL translation on CSV queries.
 # Falls back to GROQ_API_KEY so existing setups need no change.
 GROQ_API_KEY      = os.environ.get("GROQ_CSV_API_KEY") or os.environ.get("GROQ_API_KEY")
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_VISION_MODEL = os.getenv("GROQ_CSV_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 PG_HOST     = os.environ.get("PG_HOST",     "localhost")
 PG_PORT     = os.environ.get("PG_PORT",     "5432")
