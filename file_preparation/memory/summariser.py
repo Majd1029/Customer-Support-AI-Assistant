@@ -48,6 +48,7 @@ Usage in api.py
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Optional
@@ -71,7 +72,7 @@ from .buffer import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-_SUMMARISE_MODEL    = "qwen/qwen3-32b"
+_SUMMARISE_MODEL    = os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b")  # override if Groq retires the model
 _SUMMARISE_TOKENS   = 512     # generous for a 200-word summary + Qwen3 thinking
 _SUMMARISE_TEMP     = 0.0     # deterministic
 _SUMMARISE_TIMEOUT  = 30      # fail fast — summarisation is not user-facing

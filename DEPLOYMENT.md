@@ -73,7 +73,17 @@ the two later doesn't require re-indexing documents.
    `PG_HOST` / `PG_USER` / `PG_PASSWORD`, `QDRANT_URL` / `QDRANT_API_KEY`, and
    `FRONTEND_URL` (put your Vercel URL here once step 4 is done).
    `JWT_SECRET` is generated automatically.
-4. The first build takes ~5–10 minutes. The service URL looks like
+4. Groq retires models over time. `…/health` lists any configured model your key
+   can't use under `groq.unavailable_models`, together with `available_models`;
+   set `GROQ_MEMORY_MODEL` (query rewriting / memory) and `JUDGE_MODEL` to one of
+   the available ids in the Render environment.
+5. **Scanned PDFs and image captions** need a model that reads images. If your
+   Groq key has none, use Gemini's free tier (no card): create a key at
+   <https://aistudio.google.com/apikey> and set
+   `VISION_API_BASE` = `https://generativelanguage.googleapis.com/v1beta/openai/`,
+   `VISION_API_KEY` = the key, `VISION_MODEL` = `gemini-flash-latest`.
+   Any OpenAI-compatible vision endpoint works the same way.
+6. The first build takes ~5–10 minutes. The service URL looks like
    `https://support-api-xxxx.onrender.com`; check `…/health`. Ollama showing
    "down" there is expected. Every push to the deployed branch redeploys.
 
