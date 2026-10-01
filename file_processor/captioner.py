@@ -54,7 +54,8 @@ def _ollama_available() -> bool:
 def _groq_available() -> bool:
     try:
         import os
-        if not os.getenv("GROQ_API_KEY", ""):
+        from file_processor.vision_client import vision_available
+        if not vision_available(os.getenv("GROQ_API_KEY", "")):
             return False
         from file_processor.groq_client import caption_image_groq   # noqa: F401
         return True
