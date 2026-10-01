@@ -32,7 +32,7 @@ from typing import Any
 
 from loguru import logger
 
-from file_preparation.embedding.embedder     import encode                              # type: ignore[import]
+from file_preparation.embedding.backend      import encode                              # type: ignore[import]
 from file_preparation.retrieval.bm25_encoder import bm25_encode, update_corpus_avg_dl  # type: ignore[import]
 from file_preparation.indexing.store         import (                                   # noqa: E402
     build_point,

@@ -566,25 +566,3 @@ function Toggle({
   );
 }
 
-// ── Always-on indicator row ───────────────────────────────────────────────────
-function AlwaysOnRow({ label, description }: { label: string; description: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <p className="text-sm" style={{ color: 'var(--text-on-dark)' }}>{label}</p>
-        <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{description}</p>
-      </div>
-      <span
-        className="flex-shrink-0 text-[10px] font-semibold px-2 py-1 rounded-full cursor-default"
-        title="Always enabled — cannot be turned off in this build"
-        style={{
-          background: 'rgba(99,102,241,0.18)',
-          color: 'var(--accent)',
-          letterSpacing: '0.04em',
-        }}
-      >
-        ON
-      </span>
-    </div>
-  );
-}
