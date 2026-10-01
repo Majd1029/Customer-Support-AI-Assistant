@@ -667,7 +667,12 @@ async def health():
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-                r = await client.get(f"{qdrant_url}/healthz")
+                # Qdrant Cloud rejects unauthenticated requests (HTTP 403), so send the key when set
+                qdrant_key = os.getenv("QDRANT_API_KEY")
+                r = await client.get(
+                    f"{qdrant_url}/healthz",
+                    headers={"api-key": qdrant_key} if qdrant_key else None,
+                )
             return {"status": "ok"} if r.status_code == 200 else \
                    {"status": "down", "error": f"HTTP {r.status_code}"}
         except Exception as e:
