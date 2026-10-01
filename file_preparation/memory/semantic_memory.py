@@ -38,6 +38,7 @@ Public API
 
 from __future__ import annotations
 
+import os
 import json
 import re
 import uuid
@@ -406,7 +407,7 @@ def semantic_memory_available() -> bool:
 # Auto-extraction — Sprint 5
 # ---------------------------------------------------------------------------
 
-_PREF_EXTRACT_MODEL   = "qwen/qwen3-32b"
+_PREF_EXTRACT_MODEL   = os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b")  # override if Groq retires the model
 _PREF_EXTRACT_TIMEOUT = 20      # seconds — runs on background path
 
 _PREF_EXTRACT_SYSTEM = (

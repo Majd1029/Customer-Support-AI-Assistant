@@ -45,7 +45,8 @@ export default function App() {
   useEffect(() => {
     const check = async () => {
       try {
-        const res = await fetch(`${API_URL}/health`);
+        // /app-state mirrors /health; ad blockers can silently drop requests to */health
+        const res = await fetch(`${API_URL}/app-state`);
         if (!res.ok) { setHealth('unreachable'); return; }
         const data = (await res.json()) as { status: string };
         setHealth(data.status === 'ok' ? 'ok' : 'degraded');

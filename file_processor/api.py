@@ -161,7 +161,12 @@ try:
     )
     # Cache a single client instance — reused across all requests
     _qdrant_client = _emb_get_client()
-    _qdrant_client.get_collections()   # verify connectivity at startup
+    _startup_collections = {c.name for c in _qdrant_client.get_collections().collections}  # verifies connectivity
+    # Backfill payload indexes on existing collections (Qdrant Cloud rejects
+    # filters such as owner_id on unindexed fields).
+    from file_preparation.indexing.store import ensure_payload_indexes as _emb_ensure_indexes
+    if _EMB_DEFAULT_COLLECTION in _startup_collections:
+        _emb_ensure_indexes(_qdrant_client, _EMB_DEFAULT_COLLECTION)
     EMBEDDING_ENABLED = True
 except Exception as _emb_err:
     import traceback
@@ -717,12 +722,38 @@ async def health():
                     "https://api.groq.com/openai/v1/models",
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
-            return {"status": "ok"} if r.status_code == 200 else \
-                   {"status": "down", "error": f"HTTP {r.status_code}"}
+            if r.status_code != 200:
+                return {"status": "down", "error": f"HTTP {r.status_code}"}
+            # Flag configured models this key can't use (Groq retires models over time).
+            available = sorted(m.get("id", "") for m in r.json().get("data", []))
+            try:
+                from file_preparation.generation.answer_generator import _GROQ_MODEL_DEFAULT as _gen_default
+            except Exception:
+                _gen_default = "meta-llama/llama-4-scout-17b-16e-instruct"
+            configured = {
+                "generation (GROQ_GENERATION_MODEL)": os.getenv("GROQ_GENERATION_MODEL", _gen_default),
+                "memory (GROQ_MEMORY_MODEL)":         os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b"),
+                "judge (JUDGE_MODEL)":                os.getenv("JUDGE_MODEL", "qwen/qwen3-32b"),
+                "ocr (GROQ_OCR_MODEL)":               os.getenv("GROQ_OCR_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                "intent (GROQ_INTENT_MODEL)":         os.getenv("GROQ_INTENT_MODEL", "llama-3.1-8b-instant"),
+                "csv (GROQ_CSV_MODEL)":               os.getenv("GROQ_CSV_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                "caption (GROQ_CAPTION_MODEL)":       os.getenv("GROQ_CAPTION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            }
+            from file_processor.vision_client import external_vision_enabled
+            if external_vision_enabled():   # OCR + captions go to VISION_API_BASE, not Groq
+                configured.pop("ocr (GROQ_OCR_MODEL)")
+                configured.pop("caption (GROQ_CAPTION_MODEL)")
+            missing = {k: v for k, v in configured.items() if v not in available}
+            if not missing:
+                return {"status": "ok"}
+            return {"status": "ok", "unavailable_models": missing, "available_models": available}
         except Exception as e:
             return {"status": "down", "error": str(e)}
 
     async def check_groq_ocr() -> dict:
+        from file_processor.vision_client import VISION_API_BASE, VISION_MODEL, external_vision_enabled
+        if external_vision_enabled():
+            return {"status": "ok", "ocr_model": VISION_MODEL, "provider": VISION_API_BASE}
         api_key = os.getenv("GROQ_OCR_API_KEY") or os.getenv("GROQ_API_KEY", "")
         if not api_key:
             return {"status": "down", "error": "GROQ_OCR_API_KEY not set"}
@@ -756,7 +787,10 @@ async def health():
         "groq_ocr":  "primary OCR unavailable (GROQ_OCR_API_KEY not set) — falling back to Ollama/Gemma4 for scanned documents",
     }
 
-    degraded = [k for k, v in services.items() if v.get("status") != "ok"]
+    # Ollama is only a fallback for answer generation / OCR, so it doesn't
+    # degrade the overall status while Groq is serving those requests.
+    optional = {"ollama"} if services["groq"].get("status") == "ok" else set()
+    degraded = [k for k, v in services.items() if v.get("status") != "ok" and k not in optional]
 
     # Memory backend info (no network round-trip needed)
     try:
@@ -783,6 +817,13 @@ async def health():
             "slots_free":  _ASK_MAX_CONCURRENT - ask_slots_used,
         },
     }
+
+
+
+@app.get("/app-state")
+async def app_state():
+    """Same payload as /health under a path browser ad blockers don't filter (used by the UI)."""
+    return await health()
 
 
 MAX_UPLOAD_MB    = 500

@@ -117,7 +117,7 @@ _MEM_LOCK  = threading.Lock()
 # Groq-backed fact extraction
 # ---------------------------------------------------------------------------
 
-_EXTRACT_MODEL   = "qwen/qwen3-32b"
+_EXTRACT_MODEL   = os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b")  # override if Groq retires the model
 _EXTRACT_TIMEOUT = 20    # seconds — on the background path, be generous
 _THINK_RE        = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
