@@ -1,0 +1,54 @@
+name: Deploy backend to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["rag-ui/**", "**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Requires repo secret GCP_SA_KEY (service-account JSON key) and repo variable GCP_PROJECT_ID.
+    # Optional repo variables: GCP_REGION (default europe-west1), CLOUD_RUN_SERVICE (default support-api).
+    if: ${{ vars.GCP_PROJECT_ID != '' }}
+    env:
+      REGION: ${{ vars.GCP_REGION || 'europe-west1' }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'support-api' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Build and deploy
+        # Env vars / secrets are managed on the service itself (Cloud Run console);
+        # redeploys keep them because no --set-env-vars flag is passed here.
+        # --no-cpu-throttling keeps CPU available after a response is sent, which the
+        # background upload/indexing pool needs.
+        run: |
+          gcloud config set builds/timeout 3600
+          gcloud run deploy "$SERVICE" \
+            --source . \
+            --region "$REGION" \
+            --allow-unauthenticated \
+            --memory 4Gi \
+            --cpu 2 \
+            --no-cpu-throttling \
+            --cpu-boost \
+            --min-instances 0 \
+            --max-instances 1 \
+            --timeout 900 \
+            --quiet
+
+      - name: Show service URL
+        run: gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)'

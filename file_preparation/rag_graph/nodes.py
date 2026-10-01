@@ -405,7 +405,7 @@ async def score_node(state: dict) -> dict:
     # ── Semantic alignment ────────────────────────────────────────────────
     alignment: Optional[float] = None
     try:
-        from file_preparation.embedding.embedder import encode_query  # type: ignore
+        from file_preparation.embedding.backend import encode_query  # type: ignore
         import numpy as np
 
         eq = await asyncio.get_event_loop().run_in_executor(
