@@ -102,12 +102,12 @@ def _get_groq_client():
     if _GROQ_CLIENT is not None:
         return _GROQ_CLIENT
     try:
-        from groq import Groq
+        from file_processor.vision_client import external_vision_enabled, make_vision_client
         api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
+        if not api_key and not external_vision_enabled():
             logger.warning("GROQ_API_KEY not set — add it to your .env file")
             return None
-        _GROQ_CLIENT = Groq(api_key=api_key)
+        _GROQ_CLIENT = make_vision_client(api_key)   # Groq, or VISION_API_BASE provider when set
         logger.info(f"Groq OCR client ready (model: {_GROQ_OCR_MODEL})")
         return _GROQ_CLIENT
     except ImportError:
@@ -121,6 +121,9 @@ def _get_groq_client():
 def glmocr_available() -> bool:
     """Returns True if the Groq client is usable for OCR."""
     try:
+        from file_processor.vision_client import external_vision_enabled
+        if external_vision_enabled():
+            return True
         from groq import Groq  # noqa: F401
         return bool(os.getenv("GROQ_API_KEY"))
     except ImportError:

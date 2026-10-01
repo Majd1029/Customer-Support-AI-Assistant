@@ -83,6 +83,9 @@ PROMPTS = {
 
 def groq_ocr_available() -> bool:
     """True when GROQ_OCR_API_KEY (or GROQ_API_KEY) is set. No network call."""
+    from file_processor.vision_client import external_vision_enabled
+    if external_vision_enabled():
+        return True
     if not GROQ_OCR_API_KEY:
         return False
     try:
@@ -105,9 +108,9 @@ def _ocr_via_groq(
     Send a base64-encoded image to Groq's multimodal endpoint and return OCR text.
     Raises on any error so the caller can fall back to Gemma4/Ollama.
     """
-    from groq import Groq
+    from file_processor.vision_client import make_vision_client
 
-    client = Groq(api_key=GROQ_OCR_API_KEY)
+    client = make_vision_client(GROQ_OCR_API_KEY)   # Groq, or VISION_API_BASE provider when set
     prompt = PROMPTS.get(mode, PROMPTS[OCRMode.EXTRACT])
 
     response = client.chat.completions.create(
