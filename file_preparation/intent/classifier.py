@@ -36,6 +36,7 @@ Usage
 
 from __future__ import annotations
 
+import os
 import json
 import re
 import time
@@ -83,7 +84,7 @@ _FAST_ESCALATE_PATTERNS = re.compile(
 )
 
 # Groq model for intent classification — use fastest model on hot path
-_INTENT_MODEL = "llama-3.1-8b-instant"
+_INTENT_MODEL = os.getenv("GROQ_INTENT_MODEL", "llama-3.1-8b-instant")
 
 # Qwen3 think-tag stripper (in case model emits them)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)

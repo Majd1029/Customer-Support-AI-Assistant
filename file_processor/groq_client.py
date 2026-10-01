@@ -13,7 +13,7 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ── Model ────────────────────────────────────────────────────────────────────
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL = os.getenv("GROQ_CAPTION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # Dedicated captioning key gets its own 6 000 TPM free-tier pool.
 # Falls back to the master GROQ_API_KEY when unset — same pattern used

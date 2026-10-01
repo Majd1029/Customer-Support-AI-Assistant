@@ -735,6 +735,9 @@ async def health():
                 "memory (GROQ_MEMORY_MODEL)":         os.getenv("GROQ_MEMORY_MODEL", "qwen/qwen3-32b"),
                 "judge (JUDGE_MODEL)":                os.getenv("JUDGE_MODEL", "qwen/qwen3-32b"),
                 "ocr (GROQ_OCR_MODEL)":               os.getenv("GROQ_OCR_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                "intent (GROQ_INTENT_MODEL)":         os.getenv("GROQ_INTENT_MODEL", "llama-3.1-8b-instant"),
+                "csv (GROQ_CSV_MODEL)":               os.getenv("GROQ_CSV_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                "caption (GROQ_CAPTION_MODEL)":       os.getenv("GROQ_CAPTION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
             }
             missing = {k: v for k, v in configured.items() if v not in available}
             if not missing:
