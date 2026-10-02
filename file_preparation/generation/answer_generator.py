@@ -1261,7 +1261,7 @@ if __name__ == "__main__":
                 "retrieval, and exposes a FastAPI server with streaming endpoints."
             ),
             "metadata": {
-                "source":     "CLAUDE.md",
+                "source":     "README.md",
                 "page_start": 1,
                 "section":    "Project Overview",
                 "type":       "text",
@@ -1277,7 +1277,7 @@ if __name__ == "__main__":
                 "vectors computed by bm25_encoder.py."
             ),
             "metadata": {
-                "source":     "CLAUDE.md",
+                "source":     "README.md",
                 "page_start": 2,
                 "section":    "Embedding",
                 "type":       "text",

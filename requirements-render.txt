@@ -56,7 +56,7 @@ bm25s>=0.1.10
 rank-bm25>=0.2.2
 
 # ── Reranking (Jina cross-encoder) ────────────────────────────────────────────
-# Pin transformers <5 to avoid sentence-transformers conflict (see CLAUDE.md §Known Limitations)
+# Pin transformers <5 to avoid a sentence-transformers conflict
 
 # ── Protobuf (must be >=4 for qdrant-client 1.9+) ────────────────────────────
 protobuf<=3.20.2
