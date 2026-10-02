@@ -54,7 +54,7 @@ bm25s>=0.1.10
 rank-bm25>=0.2.2
 
 # ── Reranking (Jina cross-encoder) ────────────────────────────────────────────
-# Pin transformers <5 to avoid sentence-transformers conflict (see CLAUDE.md §Known Limitations)
+# Pin transformers <5 to avoid a sentence-transformers conflict
 sentence-transformers>=3.0.0
 transformers>=4.40.0,<5.0.0
 
